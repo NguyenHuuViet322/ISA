@@ -1,0 +1,10 @@
+mach
+2
+job
+10
+ctrl_factor
+0.5
+proc_time
+[ 0 28 88 74 26 92 47 97 97 95 97]
+unit_cost
+[4 3]
