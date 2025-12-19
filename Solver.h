@@ -17,20 +17,21 @@ public:
     int upper_bound;
     int lower_bound;
     int bound;
-    double block_parametter = 0.1, cooling_rate = 0.995, adaptation_rate = 0.15;
+    double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
-    double penalty_factor = 50, t0 = 1000.0;
+    double penalty_factor = 50, t0 = 1000.0, beta = 10;
+    
 
     Solver()
     {
-        if (instance.readFromFile("data/T_3.txt"))
+        if (instance.readFromFile("data/T_1500.txt"))
         {
             X.resize(instance.job + 1, 1);
             cost.resize(instance.mach + 1, 0);
             instance.print();
             upper_bound = calculateUpper();
             lower_bound = calculateLower();
-            bound = (1 - instance.ctrl_factor) * upper_bound + instance.ctrl_factor * lower_bound;
+            bound = (1 - instance.ctrl_factor) * lower_bound + instance.ctrl_factor * upper_bound;
             std::cout << "Upper Bound: " << upper_bound << "\n";
             std::cout << "Lower Bound: " << lower_bound << "\n";
             std::cout << "Bound: " << bound << "\n";
@@ -53,7 +54,6 @@ public:
         long long iter = 1;
         while (true)
         {
-            std::cout << iter << "\n";
             theta = instance.mach;
             while (instance.proc_time[iter] * (instance.unit_cost[theta - 1] - instance.unit_cost[1] > bound - cost) && theta > 1)
             {
@@ -77,14 +77,11 @@ public:
 
     void ISA()
     {
-        // ===============================
-        // 1. Initialization (Algorithm 4: lines 1–4)
-        // ===============================
-        std::vector<int> Xb = X; // best solution
+        std::vector<int> Xb = X; 
         double bestFitness = fitnessFunction();
 
-        double T = t0;      // current temperature
-        int stagnation = 0; // counter i in algorithm
+        double T = t0;      
+        int stagnation = 0; 
 
         int maxInnerIter = std::ceil(
             (double)instance.job / instance.mach);
@@ -92,36 +89,21 @@ public:
         int blockSize = std::max(
             1, (int)(block_parametter * instance.job));
 
-        // ===============================
-        // 2. Main loop (Termination condition)
-        // ===============================
         while (T > 1e-4)
         {
 
             for (int iter = 0; iter < maxInnerIter; ++iter)
             {
-
-                // ===============================
-                // 3. Roulette selection
-                // ===============================
                 int op = ops.selectOperator();
 
-                // Backup current solution
                 std::vector<int> X_old = X;
                 double oldFitness = fitnessFunction();
 
-                // ===============================
-                // 4. Neighborhood search
-                // ===============================
                 ops.apply(op, X, instance.mach, blockSize);
                 double newFitness = fitnessFunction();
 
-                // ===============================
-                // 5. Acceptance rules (SA)
-                // ===============================
                 if (newFitness < bestFitness)
                 {
-                    // Best improvement
                     Xb = X;
                     bestFitness = newFitness;
                     stagnation = 0;
@@ -130,14 +112,12 @@ public:
                 }
                 else if (newFitness < oldFitness)
                 {
-                    // Improvement
                     stagnation++;
 
                     ops.reward(op, phi2_score_factor);
                 }
                 else
                 {
-                    // Worse solution → SA acceptance
                     double prob = std::exp(-(newFitness - oldFitness) / T);
                     double r = (double)rand() / RAND_MAX;
 
@@ -147,16 +127,12 @@ public:
                     }
                     else
                     {
-                        // Reject
                         X = X_old;
                     }
 
                     ops.penalize(op);
                 }
 
-                // ===============================
-                // 6. Reset operator weights if stagnated
-                // ===============================
                 if (stagnation >= reset_threshold)
                 {
                     ops.resetWeights();
@@ -164,24 +140,51 @@ public:
                 }
             }
 
-            // ===============================
-            // 7. Update operator weights (adaptive)
-            // ===============================
             ops.updateWeights(adaptation_rate);
 
-            // ===============================
-            // 8. Cooling
-            // ===============================
             T *= cooling_rate;
         }
 
-        // ===============================
-        // 9. Restore best & repair
-        // ===============================
         X = Xb;
+        std::cout << "[LOG OBJ]"
+          << " TCT=" << totalCompletionTime()
+          << " TEC=" << totalEnergyConsumption()
+          << " Fitness=" << fitnessFunction()
+          << " Bound=" << bound
+          << "\n";
         repair();
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
-        printSolution();
+        std::cout << "Fitness: " << fitnessFunction() << "\n";
+        //printSolution();
+    }
+
+    void localSearch() {
+        bool improved = true;
+        while (improved) {
+            improved = false;
+            double currentFitness = fitnessFunction();
+            
+            for (int j = 1; j <= instance.job; ++j) {
+                int oldMachine = X[j];
+                
+                for (int m = 1; m <= instance.mach; ++m) {
+                    if (m == oldMachine) continue;
+                    
+                    X[j] = m;
+                    double newFitness = fitnessFunction();
+                    
+                    if (newFitness < currentFitness) {
+                        currentFitness = newFitness;
+                        improved = true;
+                        break;
+                    }
+                    
+                    X[j] = oldMachine;
+                }
+                
+                if (improved) break;
+            }
+        }
     }
 
     void repair()
@@ -288,30 +291,42 @@ public:
         return U;
     }
 
-    long long totalCompletionTime()
-    {
-        std::vector<long long> machineFinish(instance.mach, 0);
+    long long totalCompletionTime() {
         long long total = 0;
 
-        for (int i = 0; i < instance.job; ++i)
-        {
-            int m = X[i] - 1;
-            machineFinish[m] += instance.proc_time[i];
-            total += machineFinish[m];
+        for (int m = 1; m <= instance.mach; ++m) {
+            long long time = 0;
+
+            for (int j = 1; j <= instance.job; ++j) {
+                if (X[j] == m) {
+                    time += instance.proc_time[j];
+                    total += time;
+                }
+            }
         }
 
         return total;
     }
+
 
     long long totalEnergyConsumption()
     {
-        long long total = 0;
-        for (int i = 0; i < X.size(); ++i)
-        {
-            total += instance.unit_cost[X[i] - 1] * instance.proc_time[i];
+        std::vector<long long> machineTime(instance.mach + 1, 0);
+
+        for (int j = 1; j <= instance.job; ++j) {
+            int m = X[j];
+            machineTime[m] += instance.proc_time[j];
         }
-        return total;
+
+        long long U = 0;
+        for (int m = 1; m <= instance.mach; ++m) {
+            U += machineTime[m] * instance.unit_cost[m - 1];
+        }
+
+        return U;
     }
+
+
 
     double fitnessFunction()
     {
