@@ -20,11 +20,11 @@ public:
     int bound;
     double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
-    double penalty_factor = 50, t0 = 1000.0, beta = 10;
+    double penalty_factor = 50, t0 = 1000.0, beta = 15;
 
     Solver()
     {
-        if (instance.readFromFile("data/T_2151.txt"))
+        if (instance.readFromFile("data/T_1501.txt"))
         {
             // X.resize(instance.job + 1, 1);
             // cost.resize(instance.mach + 1, 0);
@@ -430,7 +430,90 @@ public:
     {
         std::vector<ParameterSet> params = {
 
-            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 50, 0.2}, // Extremely slow cooling
+            {0.9999, 0.10, 0.4, 300, 0.85, 0.6, 50, 0.2}, // Extremely slow cooling
+            // ===== Group 1: Điều chỉnh adaptation_rate =====
+            {0.9999, 0.10, 0.1, 300, 0.8, 0.7, 50, 0.2}, // Giảm adaptation → ổn định hơn
+            {0.9999, 0.12, 0.1, 300, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.18, 0.1, 300, 0.8, 0.7, 50, 0.2}, // Tăng adaptation → học nhanh hơn
+            {0.9999, 0.20, 0.1, 300, 0.8, 0.7, 50, 0.2},
+
+            // ===== Group 2: Điều chỉnh block_param =====
+            {0.9999, 0.15, 0.05, 300, 0.8, 0.7, 50, 0.2}, // Block nhỏ hơn
+            {0.9999, 0.15, 0.08, 300, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.15, 300, 0.8, 0.7, 50, 0.2}, // Block lớn hơn
+            {0.9999, 0.15, 0.20, 300, 0.8, 0.7, 50, 0.2},
+
+            // ===== Group 3: Điều chỉnh reset_threshold =====
+            {0.9999, 0.15, 0.1, 200, 0.8, 0.7, 50, 0.2}, // Reset sớm hơn
+            {0.9999, 0.15, 0.1, 250, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.1, 400, 0.8, 0.7, 50, 0.2}, // Reset muộn hơn
+            {0.9999, 0.15, 0.1, 500, 0.8, 0.7, 50, 0.2},
+
+            // ===== Group 4: Điều chỉnh phi1 (reward for improvement) =====
+            {0.9999, 0.15, 0.1, 300, 0.75, 0.7, 50, 0.2}, // Giảm reward improvement
+            {0.9999, 0.15, 0.1, 300, 0.85, 0.7, 50, 0.2}, // Tăng reward improvement
+            {0.9999, 0.15, 0.1, 300, 0.90, 0.7, 50, 0.2},
+
+            // ===== Group 5: Điều chỉnh phi2 (reward for SA acceptance) =====
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.5, 50, 0.2}, // Giảm reward SA
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.6, 50, 0.2},
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.8, 50, 0.2}, // Tăng reward SA
+
+            // ===== Group 6: Điều chỉnh penalty_factor =====
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 30, 0.2}, // Penalty nhẹ hơn
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 75, 0.2}, // Penalty nặng hơn
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 100, 0.2},
+
+            // ===== Group 7: Điều chỉnh t0_factor =====
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 50, 0.15}, // T0 thấp hơn
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 50, 0.25}, // T0 cao hơn
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 50, 0.30},
+
+            // ===== Group 8: Kết hợp tốt nhất từ các group =====
+            // Dựa trên quan sát, thử kết hợp:
+            {0.9999, 0.12, 0.08, 300, 0.85, 0.6, 50, 0.2}, // Adaptive chậm, block nhỏ, phi1 cao
+            {0.9999, 0.18, 0.15, 300, 0.8, 0.8, 75, 0.25}, // Adaptive nhanh, block lớn, SA reward cao
+            {0.9999, 0.10, 0.1, 400, 0.85, 0.5, 50, 0.2},  // Rất ổn định, reset muộn
+            {0.9999, 0.15, 0.05, 250, 0.90, 0.6, 75, 0.2}, // Block nhỏ, reward cao, reset sớm
+
+            // ===== Group 9: Extreme cases để test ranh giới =====
+            {0.9999, 0.05, 0.1, 300, 0.8, 0.7, 50, 0.2},  // Adaptive rất chậm
+            {0.9999, 0.25, 0.1, 300, 0.8, 0.7, 50, 0.2},  // Adaptive rất nhanh
+            {0.9999, 0.15, 0.03, 300, 0.8, 0.7, 50, 0.2}, // Block rất nhỏ
+            {0.9999, 0.15, 0.25, 300, 0.8, 0.7, 50, 0.2}, // Block rất lớn
+            {0.9999, 0.15, 0.1, 100, 0.8, 0.7, 50, 0.2},  // Reset rất sớm
+            {0.9999, 0.15, 0.1, 600, 0.8, 0.7, 50, 0.2},  // Reset rất muộn
+
+            // ===== Group 10: Fine-tuning around best config =====
+            // Nếu base config (0.9999, 0.15, 0.1, 300, 0.8, 0.7, 50, 0.2) tốt nhất
+            // thử các biến thể nhỏ xung quanh nó:
+            {0.9999, 0.14, 0.09, 300, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.16, 0.11, 300, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.1, 280, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.1, 320, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.1, 300, 0.78, 0.68, 50, 0.2},
+            {0.9999, 0.15, 0.1, 300, 0.82, 0.72, 50, 0.2},
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 45, 0.19},
+            {0.9999, 0.15, 0.1, 300, 0.8, 0.7, 55, 0.21},
+
+            // ===== Group 11: Theo giả thuyết =====
+            // Giả thuyết 1: Block nhỏ + Reset sớm → Diversification cao
+            {0.9999, 0.15, 0.05, 200, 0.8, 0.7, 50, 0.2},
+
+            // Giả thuyết 2: Block lớn + Reset muộn → Intensification cao
+            {0.9999, 0.15, 0.20, 500, 0.8, 0.7, 50, 0.2},
+
+            // Giả thuyết 3: Adaptive nhanh + Penalty cao → Ép vào feasible nhanh
+            {0.9999, 0.20, 0.1, 300, 0.8, 0.7, 100, 0.2},
+
+            // Giả thuyết 4: Adaptive chậm + T0 cao → Explore lâu hơn
+            {0.9999, 0.10, 0.1, 300, 0.8, 0.7, 50, 0.30},
+
+            // Giả thuyết 5: Reward balance - ưu tiên best improvement
+            {0.9999, 0.15, 0.1, 300, 0.95, 0.5, 50, 0.2},
+
+            // Giả thuyết 6: Reward balance - ưu tiên SA exploration
+            {0.9999, 0.15, 0.1, 300, 0.7, 0.85, 50, 0.2},
 
         };
 
