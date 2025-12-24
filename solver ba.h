@@ -113,26 +113,13 @@ public:
                     }
                 }
 
-                if (stagnation >= reset_threshold/2) {
-                    std::vector<int> X_backup = X;
-                    double oldFitness = fitnessFunction();
-
-                    apply_LNS_destroy_repair();
-
-                    double newFitness = fitnessFunction();
-                    if (newFitness > oldFitness) {
-                        X = X_backup; // rollback
-                    }
-
-                    stagnation = 0;
-                }
-
                 if (stagnation >= reset_threshold) {
                     ops.resetWeights();
                     stagnation = 0;
 
                 }
             }
+
             ops.updateWeights(adaptation_rate);
             T *= cooling_rate;
         }
@@ -140,67 +127,9 @@ public:
         X = Xb;
         
         repair();
+        
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
-        std::cout << "Total Energy Consumption: " << totalEnergyConsumption() << "\n";
     }
-
-    void apply_LNS_destroy_repair(int destroy_k = 5)
-{
-    // ===== 1. Chọn job để destroy =====
-    std::vector<int> jobs(instance.job);
-    std::iota(jobs.begin(), jobs.end(), 1);
-
-    // Ưu tiên job có proc_time lớn & nằm trên máy tốn năng lượng
-    std::sort(jobs.begin(), jobs.end(), [&](int a, int b) {
-        int ma = X[a];
-        int mb = X[b];
-        long long score_a = instance.proc_time[a] * instance.unit_cost[ma - 1];
-        long long score_b = instance.proc_time[b] * instance.unit_cost[mb - 1];
-        return score_a > score_b;
-    });
-
-    destroy_k = std::min(destroy_k, instance.job);
-    std::vector<int> removed_jobs;
-
-    for (int i = 0; i < destroy_k; ++i)
-    {
-        removed_jobs.push_back(jobs[i]);
-        X[jobs[i]] = 0; // remove job
-    }
-
-    // ===== 2. Repair: chèn lại job =====
-    for (int job : removed_jobs)
-    {
-        int best_machine = -1;
-        long long best_delta = LLONG_MAX;
-
-        for (int m = 1; m <= instance.mach; ++m)
-        {
-            X[job] = m;
-
-            long long energy = totalEnergyConsumption();
-            if (energy > bound)
-                continue;
-
-            long long tct = totalCompletionTime();
-            if (tct < best_delta)
-            {
-                best_delta = tct;
-                best_machine = m;
-            }
-        }
-
-        // Nếu không có máy nào hợp lệ → fallback
-        if (best_machine == -1)
-        {
-            // gán về máy rẻ năng lượng nhất
-            best_machine = 1;
-        }
-
-        X[job] = best_machine;
-    }
-}
-
 
     void repair()
 {
@@ -470,6 +399,7 @@ public:
                 upper_bound = calculateUpper();
                 lower_bound = calculateLower();
                 bound = (1 - instance.ctrl_factor) * lower_bound + instance.ctrl_factor * upper_bound;
+
                 init();
                 t0 = p.t0_factor * totalCompletionTime() / log(2);
                 
