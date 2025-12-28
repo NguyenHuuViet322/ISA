@@ -173,17 +173,30 @@ private:
     // =====================================================
     void O3(std::vector<int> &X, int machCount, int blockSize)
     {
-        if ((int)X.size() <= blockSize + 1)
+        int m1 = 1 + rng() % machCount;
+
+        // 2. Lấy các job thuộc m1
+        std::vector<int> idx;
+        for (int i = 1; i < (int)X.size(); ++i)
+            if (X[i] == m1)
+                idx.push_back(i);
+
+        if ((int)idx.size() < blockSize)
             return;
 
-        std::uniform_int_distribution<int> startDist(
-            1, X.size() - blockSize - 1);
+        // 3. Chọn block liên tiếp trong idx
+        int start = rng() % (idx.size() - blockSize + 1);
 
-        int start = startDist(rng);
-        int newMach = 1 + rng() % machCount;
+        // 4. Chọn máy đích
+        int m2;
+        do
+        {
+            m2 = 1 + rng() % machCount;
+        } while (m2 == m1);
 
-        for (int i = start; i < start + blockSize; ++i)
-            X[i] = newMach;
+        // 5. Relocate block
+        for (int k = start; k < start + blockSize; ++k)
+            X[idx[k]] = m2;
     }
 
     // =====================================================
@@ -191,16 +204,14 @@ private:
     // =====================================================
     void O4(std::vector<int> &X, int machCount, int blockSize)
     {
-        if (machCount < 2)
-            return;
-
         int m1 = 1 + rng() % machCount;
         int m2;
         do
         {
             m2 = 1 + rng() % machCount;
-        } while (m1 == m2);
+        } while (m2 == m1);
 
+        // job list theo machine
         std::vector<int> idx1, idx2;
         for (int i = 1; i < (int)X.size(); ++i)
         {
@@ -214,14 +225,14 @@ private:
             (int)idx2.size() < blockSize)
             return;
 
-        std::shuffle(idx1.begin(), idx1.end(), rng);
-        std::shuffle(idx2.begin(), idx2.end(), rng);
+        // chọn block liên tiếp
+        int s1 = rng() % (idx1.size() - blockSize + 1);
+        int s2 = rng() % (idx2.size() - blockSize + 1);
 
+        // swap block
         for (int k = 0; k < blockSize; ++k)
-            std::swap(X[idx1[k]], X[idx2[k]]);
+            std::swap(X[idx1[s1 + k]], X[idx2[s2 + k]]);
     }
-
-    
 };
 
 #endif
