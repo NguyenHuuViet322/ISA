@@ -21,7 +21,7 @@ public:
     double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
-    double penalty = penalty_factor;
+    double penalty = penalty_factor; bool isLNS = false;
 
     Solver()
     {
@@ -70,7 +70,8 @@ public:
 
         double T = t0;
         int stagnation = 0;
-
+        int deepstagnation = 0;
+        int lns_cooldown = 0;
         int maxInnerIter = std::ceil((double)instance.job / instance.mach);
         int blockSize = std::max(1, (int)(block_parametter * instance.job));
 
@@ -110,12 +111,14 @@ public:
                 else if (newFitness < oldFitness)
                 {
                     stagnation++;
+                    deepstagnation++;
                     accepted = true;
                     ops.reward(op, phi1 * beta);
                 }
                 else if (r < prob)
                 {
                     stagnation++;
+                    deepstagnation++;
                     accepted = true;
                     ops.reward(op, phi2 * beta);
                 }
@@ -130,6 +133,34 @@ public:
                     ops.resetWeights();
                     stagnation = 0;
                 }
+
+                // if (isLNS) {
+                //     if (lns_cooldown > 0)
+                //         lns_cooldown--;
+                //     if (deepstagnation > 800 && T > 0.05 * t0 && lns_cooldown <= 0) {
+                //         std::vector<int> X_backup = X;
+
+                //         apply_LNS_destroy_by_machine(2);
+                //         lns_cooldown = 300;
+
+                //         if (!accept_LNS(oldFitness, fitnessFunction(), T))
+                //             X = X_backup;
+                //         else
+                //         {
+                //             deepstagnation = 0;
+                //             for (int k = 0; k < 15; ++k)
+                //             {
+                //                 int op = ops.selectOperator();
+                //                 std::vector<int> X_old = X;
+
+                //                 ops.apply(op, X, instance.mach, blockSize);
+                //                 if (fitnessFunction() > bestFitness)
+                //                     X = X_old;
+                //             }
+                //         }
+                //     }
+                // }
+
 
                 if (stagnation >= reset_threshold / 2 && T > 0.05 * t0)
                 {
@@ -174,7 +205,7 @@ public:
         }
 
         X = Xb;
-        finalLocalSearch();
+        // finalLocalSearch();
 
         repair();
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
@@ -469,6 +500,70 @@ public:
         }
     }
 
+    std::vector<long long> machineLoad() {
+        std::vector<long long> load(instance.mach + 1, 0);
+        for (int j = 1; j <= instance.job; ++j)
+            load[X[j]] += instance.proc_time[j];
+        return load;
+    }
+
+    void apply_LNS_destroy_by_machine(int numMachines = 1)
+{
+    // 1️⃣ tính load và score
+    auto load = machineLoad();
+
+    std::vector<int> machines(instance.mach);
+    std::iota(machines.begin(), machines.end(), 1);
+
+    std::sort(machines.begin(), machines.end(), [&](int a, int b) {
+        long long sa = load[a] * instance.unit_cost[a - 1];
+        long long sb = load[b] * instance.unit_cost[b - 1];
+        return sa > sb;
+    });
+
+    // 2️⃣ chọn machine để destroy
+    std::vector<int> removed_jobs;
+    for (int k = 0; k < numMachines; ++k) {
+        int m = machines[k];
+        for (int j = 1; j <= instance.job; ++j) {
+            if (X[j] == m) {
+                removed_jobs.push_back(j);
+                X[j] = 0;
+            }
+        }
+    }
+
+    // 3️⃣ repair – randomized greedy
+    std::shuffle(removed_jobs.begin(), removed_jobs.end(), rng);
+
+    for (int job : removed_jobs) {
+        std::vector<std::pair<long long, int>> candidates;
+
+        for (int m = 1; m <= instance.mach; ++m) {
+            X[job] = m;
+            long long energy = totalEnergyConsumption();
+            long long tct = totalCompletionTime();
+
+            // cho phép infeasible nhẹ
+            if (energy <= bound * 1.15) {
+                candidates.emplace_back(tct, m);
+            }
+        }
+
+        if (candidates.empty()) {
+            X[job] = 1;
+            continue;
+        }
+
+        std::sort(candidates.begin(), candidates.end());
+
+        int k = std::min(2, (int)candidates.size());
+        std::uniform_int_distribution<int> dist(0, k - 1);
+        X[job] = candidates[dist(rng)].second;
+    }
+}
+
+
     void repair()
     {
         if (totalEnergyConsumption() <= bound)
@@ -650,7 +745,7 @@ public:
 
     bool accept_LNS(double fitness_old, double fitness_new, double T)
     {
-        double delta = fitness_new - fitness_old;
+        double delta = fitness_new*1.02 - fitness_old;
         if (delta < 0 || rand() < exp(-delta / T))
             return true;
 
@@ -717,12 +812,14 @@ public:
         double phi2;
         double penalty_factor;
         double t0_factor;
+        bool isLNS;
     };
 
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.9995, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2},
+            {0.9999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true},
+            {0.9999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false},
         };
 
         std::ofstream outFile("parameter_tuning_results.csv");
@@ -753,10 +850,11 @@ public:
             phi1_score_factor = p.phi1;
             phi2_score_factor = p.phi2;
             penalty_factor = p.penalty_factor;
+            isLNS = p.isLNS;
 
             std::vector<double> results;
 
-            for (int run = 0; run < 10; ++run)
+            for (int run = 0; run < 20; ++run)
             {
                 X.clear();
                 X.resize(instance.job + 1, 1);
