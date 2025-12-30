@@ -6,6 +6,7 @@
 #include <vector>
 #include <numeric>
 #include "Operators.h"
+#include <chrono>
 
 class Solver
 {
@@ -21,10 +22,13 @@ public:
     double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
+    double penalty = penalty_factor; bool isLNS = false;
+    double reheat_factor; double T_cap_factor;
+    bool isPrint = false; bool isReheat = false;
 
     Solver()
     {
-        if (instance.readFromFile("data/test.txt"))
+        if (instance.readFromFile("data/test2.txt"))
         {
             parameterTuning();
         }
@@ -69,119 +73,120 @@ public:
 
         double T = t0;
         int stagnation = 0;
-
         int maxInnerIter = std::ceil((double)instance.job / instance.mach);
         int blockSize = std::max(1, (int)(block_parametter * instance.job));
 
-        double beta = 10.0;
+        double beta = 15.0;
         double phi1 = phi1_score_factor;
         double phi2 = phi2_score_factor;
-        int reheating_count = 0;
-
         int iteration_count = 0;
+        int reheat_count = 0;
+        int improve_window = 0;
+        int window_size = 500;
+        int improve_count = 0;
+        int move_count = 0;
+
+        double T_low = 0.03 * t0;
+        double T_cap = 0.2 * t0;
+        int reheat_hold = 6000;
+        int reheat_hold_counter = 0;
+        double reheat_factor = 3;
+        int max_reheat = 5;
+
 
         while (T > 1e-4)
         {
             for (int iter = 0; iter < maxInnerIter; ++iter)
             {
+                double T_accept = T;
+                double T_move = std::min(T, 0.05 * t0);
+
                 iteration_count++;
 
                 int op = ops.selectOperator();
                 std::vector<int> X_old = X;
-                long long curTCT = totalCompletionTime();
-                long long curEnergy = totalEnergyConsumption();
-                double curFitness = (curEnergy <= bound)
-                                        ? curTCT
-                                        : curTCT + penalty_factor * (curEnergy - bound);
+                double oldFitness = fitnessFunction();
 
-                ops.apply(op, X, instance.mach, blockSize);
-                long long newTCT = totalCompletionTime();
-                long long newEnergy = totalEnergyConsumption();
-                double newFitness = (newEnergy <= bound)
-                                        ? newTCT
-                                        : newTCT + penalty_factor * (newEnergy - bound);
+                ops.apply(op, X, instance.mach, std::max(1, blockSize));
+                double newFitness = fitnessFunction();
+
+                bool accepted = false;
+                double prob = std::exp(-(newFitness - oldFitness) / T_accept);
+                std::uniform_real_distribution<double> dist(0.0, 1.0);
+                double r = dist(rng);
 
                 if (newFitness < bestFitness)
                 {
                     Xb = X;
                     bestFitness = newFitness;
+                    improve_count++;
                     stagnation = 0;
                     ops.reward(op, beta);
                 }
-                else if (newFitness < curFitness)
+                else if (newFitness < oldFitness)
                 {
-
                     stagnation++;
                     ops.reward(op, phi1 * beta);
                 }
+                else if (r < prob)
+                {
+                    stagnation++;
+                    ops.reward(op, phi2 * beta);
+                }
                 else
                 {
-                    double prob = std::exp(-(newFitness - curFitness) / T);
-                    std::uniform_real_distribution<double> dist(0.0, 1.0);
-                    double r = dist(rng);
-
-                    if (r < prob)
-                    {
-                        stagnation++;
-                        ops.reward(op, phi2 * beta);
-                    }
-                    else
-                    {
-                        X = X_old;
-                    }
+                    X = X_old;
+                    ops.penalize(op);
                 }
 
-                if (stagnation >= reset_threshold / 2 && T > 0.05 * t0)
+                if (stagnation >= reset_threshold)
                 {
-                    std::vector<int> X_backup = X;
-
-                    long long oldTCT = totalCompletionTime();
-                    long long oldEnergy = totalEnergyConsumption();
-
-                    int destroy_k = std::min(5 + stagnation / 50, 40);
-                    apply_LNS_destroy_repair(destroy_k);
-
-                    long long newTCT = totalCompletionTime();
-                    long long newEnergy = totalEnergyConsumption();
-
-                    if (!accept_LNS(oldTCT, oldEnergy, newTCT, newEnergy))
-                    {
-                        X = X_backup; // rollback
-                    }
-                    else
-                    {
-                        stagnation = 0;
-
-                        for (int k = 0; k < 15; ++k)
-                        {
-                            int op = ops.selectOperator();
-                            std::vector<int> X_old = X;
-
-                            ops.apply(op, X, instance.mach, blockSize);
-                            if (fitnessFunction() > bestFitness)
-                                X = X_old;
-                        }
-                    }
-                }
-
-                const int max_reheating = 3;
-
-                if (stagnation >= reset_threshold &&
-                    reheating_count < max_reheating &&
-                    T < 0.3 * t0)
-                {
-                    T = std::max(T, 0.15 * t0);
-                    reheating_count++;
+                    ops.resetWeights();
                     stagnation = 0;
                 }
+
+                if (isReheat) {
+                    if (iteration_count % window_size == 0)
+                    {
+                        if (T < T_low &&
+                            improve_window >= 2 &&
+                            reheat_count < max_reheat)
+                        {
+                            T = std::min(T * reheat_factor, T_cap);
+                            reheat_hold_counter = reheat_hold;
+                            reheat_count++;
+                        }
+                        improve_window = 0;
+                    }
+                }
+
+                if (isLNS) {
+                    if (T < 0.01 * t0 && stagnation > 2 * reset_threshold)
+                    {
+                        int k = 2 + stagnation / 100;
+                        apply_LNS_destroy_repair(k);
+                    }
+
+                }
             }
-            std::cout << "Iteration " << iteration_count
+            if (isPrint) {
+                std::cout << "Iteration " << iteration_count
                       << ", Current Fitness: " << fitnessFunction()
                       << ", Best Fitness: " << bestFitness
                       << ", Temperature: " << T << "\n";
+            }
 
             ops.updateWeights(adaptation_rate);
-            T *= cooling_rate;
+            if (reheat_hold_counter > 0)
+            {
+                reheat_hold_counter--;
+            }
+            else
+            {
+                T *= cooling_rate;
+            }
+
+            penalty = penalty_factor * (1.0 + T / t0);
         }
 
         X = Xb;
@@ -191,6 +196,32 @@ public:
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
         // std::cout << "Total Energy Consumption: " << totalEnergyConsumption() << "\n";
     }
+
+    void stochasticTailSearch(int iters = 5000)
+    {
+        double T = 1e-4;   // rất thấp
+        for (int k = 0; k < iters; ++k)
+        {
+            int op = ops.selectOperator();
+            auto X_old = X;
+            double oldF = fitnessFunction();
+
+            ops.apply(op, X, instance.mach, 1); // block size = 1
+
+            double newF = fitnessFunction();
+            if (newF <= oldF)
+                continue;
+
+            // rất hiếm accept xấu
+            double prob = exp(-(newF - oldF) / T);
+            if (rand() > prob)
+                X = X_old;
+            std::cout << "Tail Search Iteration " << k
+                      << ", Current Fitness: " << fitnessFunction()
+                      << ", Previous Fitness: " << oldF << "\n";
+        }
+    }
+
 
     bool local_single_relocate()
     {
@@ -220,6 +251,146 @@ public:
             X[j] = old_m; // rollback
         }
 
+        return false;
+    }
+
+    bool local_block_relocate(int blockSize)
+    {
+        long long bestTCT = totalCompletionTime();
+
+        for (int m1 = 1; m1 <= instance.mach; ++m1)
+        {
+            std::vector<int> idx;
+            for (int j = 1; j <= instance.job; ++j)
+                if (X[j] == m1)
+                    idx.push_back(j);
+
+            if ((int)idx.size() < blockSize)
+                continue;
+
+            for (int s = 0; s <= (int)idx.size() - blockSize; ++s)
+            {
+                for (int m2 = 1; m2 <= instance.mach; ++m2)
+                {
+                    if (m2 == m1)
+                        continue;
+
+                    // apply block relocate
+                    for (int k = 0; k < blockSize; ++k)
+                        X[idx[s + k]] = m2;
+
+                    if (totalEnergyConsumption() <= bound)
+                    {
+                        long long tct = totalCompletionTime();
+                        if (tct < bestTCT)
+                            return true;
+                    }
+
+                    // rollback
+                    for (int k = 0; k < blockSize; ++k)
+                        X[idx[s + k]] = m1;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool local_block_swap(int blockSize)
+    {
+        long long bestTCT = totalCompletionTime();
+
+        for (int m1 = 1; m1 <= instance.mach; ++m1)
+            for (int m2 = m1 + 1; m2 <= instance.mach; ++m2)
+            {
+                std::vector<int> a, b;
+                for (int j = 1; j <= instance.job; ++j)
+                {
+                    if (X[j] == m1)
+                        a.push_back(j);
+                    else if (X[j] == m2)
+                        b.push_back(j);
+                }
+
+                if ((int)a.size() < blockSize || (int)b.size() < blockSize)
+                    continue;
+
+                for (int i = 0; i <= (int)a.size() - blockSize; ++i)
+                    for (int j = 0; j <= (int)b.size() - blockSize; ++j)
+                    {
+                        for (int k = 0; k < blockSize; ++k)
+                            std::swap(X[a[i + k]], X[b[j + k]]);
+
+                        if (totalEnergyConsumption() <= bound)
+                        {
+                            long long tct = totalCompletionTime();
+                            if (tct < bestTCT)
+                                return true;
+                        }
+
+                        for (int k = 0; k < blockSize; ++k)
+                            std::swap(X[a[i + k]], X[b[j + k]]);
+                    }
+            }
+        return false;
+    }
+
+    int findMaxLoadMachine()
+    {
+        std::vector<long long> load(instance.mach + 1, 0);
+
+        for (int j = 1; j <= instance.job; ++j)
+        {
+            int m = X[j];
+            load[m] += instance.proc_time[j];
+        }
+
+        int maxM = 1;
+        for (int m = 2; m <= instance.mach; ++m)
+        {
+            if (load[m] > load[maxM])
+                maxM = m;
+        }
+
+        return maxM;
+    }
+
+    int findMinLoadMachine()
+    {
+        std::vector<long long> load(instance.mach + 1, 0);
+
+        for (int j = 1; j <= instance.job; ++j)
+            load[X[j]] += instance.proc_time[j];
+
+        int minM = 1;
+        for (int m = 2; m <= instance.mach; ++m)
+            if (load[m] < load[minM])
+                minM = m;
+
+        return minM;
+    }
+
+    bool local_heavy_to_light()
+    {
+        int m_heavy = findMaxLoadMachine();
+        int m_light = findMinLoadMachine();
+
+        long long bestTCT = totalCompletionTime();
+
+        for (int j = 1; j <= instance.job; ++j)
+        {
+            if (X[j] != m_heavy)
+                continue;
+
+            X[j] = m_light;
+
+            if (totalEnergyConsumption() <= bound)
+            {
+                if (totalCompletionTime() < bestTCT)
+                    return true;
+            }
+
+            X[j] = m_heavy;
+        }
         return false;
     }
 
@@ -288,57 +459,100 @@ public:
         return false;
     }
 
-    void apply_LNS_destroy_repair(int destroy_k = 5)
+    void apply_LNS_destroy_repair(int destroy_k)
+{
+    int n = instance.job;
+    int m = instance.mach;
+
+    /* =========================
+       1. Compute load per machine
+       ========================= */
+    std::vector<long long> load(m + 1, 0);
+    for (int i = 1; i <= n; ++i)
     {
-        std::vector<int> jobs(instance.job);
-        std::iota(jobs.begin(), jobs.end(), 1);
-
-        std::sort(jobs.begin(), jobs.end(), [&](int a, int b)
-                  {
-            int ma = X[a];
-            int mb = X[b];
-            long long score_a = instance.proc_time[a] * instance.unit_cost[ma - 1];
-            long long score_b = instance.proc_time[b] * instance.unit_cost[mb - 1];
-            return score_a > score_b; });
-
-        destroy_k = std::min(destroy_k, instance.job);
-        std::vector<int> removed_jobs;
-
-        for (int i = 0; i < destroy_k; ++i)
-        {
-            removed_jobs.push_back(jobs[i]);
-            X[jobs[i]] = 0;
-        }
-
-        for (int job : removed_jobs)
-        {
-            int best_machine = -1;
-            long long best_delta = LLONG_MAX;
-
-            for (int m = 1; m <= instance.mach; ++m)
-            {
-                X[job] = m;
-
-                long long energy = totalEnergyConsumption();
-                if (energy > bound)
-                    continue;
-
-                long long tct = totalCompletionTime();
-                if (tct < best_delta)
-                {
-                    best_delta = tct;
-                    best_machine = m;
-                }
-            }
-
-            if (best_machine == -1)
-            {
-                best_machine = 1;
-            }
-
-            X[job] = best_machine;
-        }
+        int mach = X[i];
+        if (mach > 0)
+            load[mach] += instance.proc_time[i];
     }
+
+    /* =========================
+       2. Select destroy candidates
+       job already sorted by proc_time
+       → take from tail
+       ========================= */
+    int candidate_start = std::max(1, n - 3 * destroy_k);
+    std::vector<int> candidates;
+    for (int i = candidate_start; i <= n; ++i)
+        candidates.push_back(i);
+
+    // Prefer jobs on heavily loaded machines
+    std::sort(candidates.begin(), candidates.end(),
+              [&](int a, int b)
+              {
+                  return load[X[a]] > load[X[b]];
+              });
+
+    destroy_k = std::min(destroy_k, (int)candidates.size());
+
+    /* =========================
+       3. Destroy
+       ========================= */
+    std::vector<int> removed_jobs;
+    removed_jobs.reserve(destroy_k);
+
+    for (int i = 0; i < destroy_k; ++i)
+    {
+        int job = candidates[i];
+        removed_jobs.push_back(job);
+        X[job] = 0; // remove assignment
+    }
+
+    /* =========================
+       4. Repair (stochastic greedy)
+       ========================= */
+    std::uniform_real_distribution<double> rand01(0.0, 1.0);
+
+    for (int job : removed_jobs)
+    {
+        std::vector<std::pair<long long, int>> options;
+
+        for (int mach = 1; mach <= m; ++mach)
+        {
+            X[job] = mach;
+
+            // energy constraint
+            if (totalEnergyConsumption() > bound)
+                continue;
+
+            long long tct = totalCompletionTime();
+            options.emplace_back(tct, mach);
+        }
+
+        // No feasible machine → fallback
+        if (options.empty())
+        {
+            X[job] = 1;
+            continue;
+        }
+
+        std::sort(options.begin(), options.end());
+
+        // stochastic selection in top-k
+        int k = std::min(3, (int)options.size());
+        double r = rand01(rng);
+        int chosen_idx = 0;
+
+        if (r < 0.6)
+            chosen_idx = 0;
+        else if (r < 0.85 && k > 1)
+            chosen_idx = 1;
+        else if (k > 2)
+            chosen_idx = 2;
+
+        X[job] = options[chosen_idx].second;
+    }
+}
+
 
     void repair()
     {
@@ -410,6 +624,45 @@ public:
         }
     }
 
+    void tailSwapLocalSearch(int max_pass = 3)
+{
+    for (int pass = 0; pass < max_pass; ++pass)
+    {
+        bool improved = false;
+
+        for (int i = instance.job; i >= 1; --i)
+        {
+            for (int j = i - 1; j >= std::max(1, i - 10); --j)
+            {
+                if (X[i] == X[j]) continue;
+
+                int mi = X[i], mj = X[j];
+
+                X[i] = mj;
+                X[j] = mi;
+
+                if (totalEnergyConsumption() <= bound &&
+                    totalCompletionTime() < fitnessFunction())
+                {   
+                    std::cout << "Tail Swap Improvement: "
+                              << "Jobs " << i << " and " << j
+                              << " swapped between machines " << mi << " and " << mj << "\n";
+                    improved = true;
+                    break;
+                }
+
+                X[i] = mi;
+                X[j] = mj;
+            }
+            if (improved) break;
+        }
+
+        if (!improved) break;
+    }
+}
+
+
+
     void redistrubutionBasedOnCost()
     {
         std::vector<int> cost_tmp(instance.mach + 1, 0);
@@ -453,13 +706,35 @@ public:
     {
         while (true)
         {
-            std::cout << "Final Local Search iteration, Current TCT: " << totalCompletionTime() << "\n";
             if (local_single_relocate())
+            {
+                std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
                 continue;
-
+            }
             if (local_two_job_swap())
+            {
+                std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
                 continue;
-            break; // 🔒 local optimum
+            }
+
+            if (local_block_relocate(2))
+            {
+                std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
+                continue;
+            }
+            if (local_block_swap(2))
+            {
+                std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
+                continue;
+            }
+
+            if (local_heavy_to_light())
+            {
+                std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
+                continue;
+            }
+            std::cout << "Local search - Current fitness: " << fitnessFunction() << "\n";
+            break;
         }
     }
 
@@ -497,30 +772,27 @@ public:
 
         for (int m = 1; m <= instance.mach; ++m)
         {
-            std::vector<int> jobs;
-            for (int j = 1; j <= instance.job; ++j)
-                if (X[j] == m)
-                    jobs.push_back(j);
-
-            std::sort(jobs.begin(), jobs.end(),
-                      [&](int a, int b)
-                      { return instance.proc_time[a] < instance.proc_time[b]; });
-
             long long time = 0;
-            for (int j : jobs)
+
+            for (int j = 1; j <= instance.job; ++j)
             {
-                time += instance.proc_time[j];
-                total += time;
+                if (X[j] == m)
+                {
+                    time += instance.proc_time[j];
+                    total += time;
+                }
             }
         }
+
         return total;
     }
 
-    bool accept_LNS(long long oldTCT, long long oldEnergy,
-                    long long newTCT, long long newEnergy)
+    bool accept_LNS(double fitness_old, double fitness_new, double T)
     {
-        if (newEnergy <= bound && newTCT < oldTCT)
+        double delta = fitness_new - fitness_old;
+        if (delta < 0 || rand() < exp(-delta / T))
             return true;
+
         return false;
     }
 
@@ -554,7 +826,7 @@ public:
         }
         else
         {
-            return TCT + 0.1 * (penalty_factor * (-bound + TEC));
+            return TCT + (penalty_factor * (-bound + TEC) * (-bound + TEC));
         }
     }
 
@@ -584,13 +856,18 @@ public:
         double phi2;
         double penalty_factor;
         double t0_factor;
+        bool isLNS;
+        bool isReheat;
+        double reheat_factor;
+        double t_cap_factor;
+        bool isPrint;
     };
 
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.999, 0.10, 0.05, 400, 0.8, 0.7, 60, 0.3},
-
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, 3.0, 0.2, true},
+            // {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, 0, 0, false},
         };
 
         std::ofstream outFile("parameter_tuning_results.csv");
@@ -621,6 +898,9 @@ public:
             phi1_score_factor = p.phi1;
             phi2_score_factor = p.phi2;
             penalty_factor = p.penalty_factor;
+            isLNS = p.isLNS;
+            isReheat = p.isReheat;
+            isPrint = p.isPrint;
 
             std::vector<double> results;
 
@@ -637,11 +917,15 @@ public:
                 init();
                 t0 = p.t0_factor * totalCompletionTime() / log(2);
 
-                // ✅ Reset penalty về giá trị ban đầu mỗi run
                 penalty_factor = p.penalty_factor;
+
+                auto start_time = std::chrono::high_resolution_clock::now();
 
                 ISA();
 
+                auto end_time = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = end_time - start_time;
+                std::cout << "Run " << run + 1 << " completed in " << elapsed.count() << " seconds.\n";
                 results.push_back(totalCompletionTime());
             }
 

@@ -3,8 +3,8 @@ using namespace std;
 
 int main()
 {
-    const int MACH = 60;
-    const int JOB = 700;
+    const int MACH = 100;
+    const int JOB = 1000;
     const double CTRL_FACTOR = 0.8;
 
     // Seed random
