@@ -28,9 +28,14 @@ public:
     double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
-    double penalty = penalty_factor; bool isLNS = false; bool isAdaptivePenalty = false; bool isAdaptiveReward = false;
-    double reheat_factor; double T_cap_factor;
-    bool isPrint = false; bool isEscape = false;
+    double penalty = penalty_factor;
+    bool isLNS = false;
+    bool isAdaptivePenalty = false;
+    bool isAdaptiveReward = false;
+    double reheat_factor;
+    double T_cap_factor;
+    bool isPrint = false;
+    bool isEscape = false;
     int escape_fail_count = 0;
     int escape_phase = 0;
 
@@ -80,11 +85,11 @@ public:
         std::time_t t = std::chrono::system_clock::to_time_t(now);
 
         std::tm tm{};
-    #ifdef _WIN32
+#ifdef _WIN32
         localtime_s(&tm, &t);
-    #else
+#else
         localtime_r(&t, &tm);
-    #endif
+#endif
 
         std::ostringstream oss;
         oss << "log/isa_log_"
@@ -94,84 +99,82 @@ public:
         return oss.str();
     }
 
-void adaptiveEscape(double T)
-{
-    int n = instance.job;
-    int m = instance.mach;
-
-    int strength = std::min(
-        n / 3,
-        3 + escape_fail_count * 2
-    );
-
-    std::uniform_int_distribution<int> randJob(1, n);
-    std::uniform_int_distribution<int> randMach(1, m);
-
-    if (escape_phase == 0)
+    void adaptiveEscape(double T)
     {
-        // ===== PHASE 0: RANDOM REASSIGN (PHÁ MẠNH) =====
-        for (int i = 0; i < strength; ++i)
+        int n = instance.job;
+        int m = instance.mach;
+
+        int strength = std::min(
+            n / 3,
+            3 + escape_fail_count * 2);
+
+        std::uniform_int_distribution<int> randJob(1, n);
+        std::uniform_int_distribution<int> randMach(1, m);
+
+        if (escape_phase == 0)
         {
-            int j = randJob(rng);
-            X[j] = randMach(rng);
+            // ===== PHASE 0: RANDOM REASSIGN (PHÁ MẠNH) =====
+            for (int i = 0; i < strength; ++i)
+            {
+                int j = randJob(rng);
+                X[j] = randMach(rng);
+            }
         }
-    }
-    else if (escape_phase == 1)
-    {
-        // ===== PHASE 1: SWAP JOBS BETWEEN MACHINES =====
-        for (int i = 0; i < strength; ++i)
+        else if (escape_phase == 1)
         {
-            int j1 = randJob(rng);
-            int j2 = randJob(rng);
-            std::swap(X[j1], X[j2]);
+            // ===== PHASE 1: SWAP JOBS BETWEEN MACHINES =====
+            for (int i = 0; i < strength; ++i)
+            {
+                int j1 = randJob(rng);
+                int j2 = randJob(rng);
+                std::swap(X[j1], X[j2]);
+            }
         }
-    }
-    else
-    {
-        // ===== PHASE 2: SHUFFLE SUBSET =====
-        std::vector<int> subset;
-        for (int i = 0; i < strength * 2; ++i)
-            subset.push_back(randJob(rng));
-
-        std::shuffle(subset.begin(), subset.end(), rng);
-
-        for (int i = 0; i < (int)subset.size() - 1; ++i)
-            X[subset[i]] = X[subset[i + 1]];
-    }
-}
-
-
-void midTemperatureEscape(double &T, int maxInnerIter)
-{
-    std::uniform_real_distribution<double> dist01(0.0, 1.0);
-    auto uniform01 = [&](std::mt19937 &rng) {
-        return dist01(rng);
-    };
-    double savedT = T;
-    T *= 1.5;                 // reheat nhẹ
-    int escapeIter = maxInnerIter / 2;
-
-    for (int i = 0; i < escapeIter; ++i)
-    {
-        int op = ops.selectOperator();
-        std::vector<int> X_old = X;
-        double oldF = fitnessFunction();
-
-        ops.apply(op, X, instance.mach,
-                  std::max(1, (int)(0.2 * instance.job)));
-
-        double newF = fitnessFunction();
-        double prob = std::exp(-(newF - oldF) / T);
-
-        if (newF < oldF || uniform01(rng) < prob)
-            ops.reward(op, beta);
         else
-            X = X_old;
+        {
+            // ===== PHASE 2: SHUFFLE SUBSET =====
+            std::vector<int> subset;
+            for (int i = 0; i < strength * 2; ++i)
+                subset.push_back(randJob(rng));
+
+            std::shuffle(subset.begin(), subset.end(), rng);
+
+            for (int i = 0; i < (int)subset.size() - 1; ++i)
+                X[subset[i]] = X[subset[i + 1]];
+        }
     }
 
-    T = savedT;
-}
+    void midTemperatureEscape(double &T, int maxInnerIter)
+    {
+        std::uniform_real_distribution<double> dist01(0.0, 1.0);
+        auto uniform01 = [&](std::mt19937 &rng)
+        {
+            return dist01(rng);
+        };
+        double savedT = T;
+        T *= 1.5; // reheat nhẹ
+        int escapeIter = maxInnerIter / 2;
 
+        for (int i = 0; i < escapeIter; ++i)
+        {
+            int op = ops.selectOperator();
+            std::vector<int> X_old = X;
+            double oldF = fitnessFunction();
+
+            ops.apply(op, X, instance.mach,
+                      std::max(1, (int)(0.2 * instance.job)));
+
+            double newF = fitnessFunction();
+            double prob = std::exp(-(newF - oldF) / T);
+
+            if (newF < oldF || uniform01(rng) < prob)
+                ops.reward(op, beta);
+            else
+                X = X_old;
+        }
+
+        T = savedT;
+    }
 
     void ISA()
     {
@@ -211,10 +214,9 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                 std::vector<int> X_old = X;
                 double oldFitness = fitnessFunction();
 
-                //ops.apply(op, X, instance.mach, blockSize);
+                // ops.apply(op, X, instance.mach, blockSize);
 
-
-                ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T  / t0))));
+                ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T / t0))));
                 totalMoves++;
 
                 double newFitness = fitnessFunction();
@@ -235,33 +237,34 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                     bestFitness = newFitness;
                     stagnation = 0;
                     noImproveIter = 0;
-                    
+
                     accepted = true;
 
-                    if(isAdaptiveReward) {
+                    if (isAdaptiveReward)
+                    {
                         double delta = oldFitness - newFitness;
                         double norm = delta / (oldFitness + 1e-9);
                         ops.reward(op, beta * std::min(norm, 0.01));
-                    } else 
+                    }
+                    else
                         ops.reward(op, beta);
 
                     improve_total++;
 
-
-                    logFile  << "[IMPROVE] "
-                        << "Iter=" << iteration_count
-                        << " | T=" << T
-                        << " | NewBest=" << bestFitness
-                        << " | Δ=" << (oldFitness - newFitness)
-                        << " | ImproveTotal=" << improve_total
-                        << "\n";
+                    logFile << "[IMPROVE] "
+                            << "Iter=" << iteration_count
+                            << " | T=" << T
+                            << " | NewBest=" << bestFitness
+                            << " | Δ=" << (oldFitness - newFitness)
+                            << " | ImproveTotal=" << improve_total
+                            << "\n";
                 }
                 else if (newFitness < oldFitness)
                 {
                     accepted = true;
                     stagnation++;
                     noImproveIter++;
-                    
+
                     ops.reward(op, phi1 * beta);
                 }
                 else if (r < prob)
@@ -269,20 +272,22 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                     accepted = true;
                     stagnation++;
                     noImproveIter++;
-                    
+
                     ops.reward(op, phi2 * beta);
                 }
                 else
-                {                    
+                {
                     X = X_old;
                     double factor = 1.0;
                     if (T > 0.2 * t0)
                         factor = 1.0 + (1.0 - T / t0);
 
                     noImproveIter++;
-                    if (isAdaptivePenalty) {
+                    if (isAdaptivePenalty)
+                    {
                         ops.penalize(op, factor);
-                    } else
+                    }
+                    else
                         ops.penalize(op, 1.0);
                 }
 
@@ -294,7 +299,6 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                 if ((int)acceptWindow.size() > AR_WINDOW)
                     acceptWindow.pop_front();
 
-
                 double accept_ratio = 0.0;
                 if (!acceptWindow.empty())
                 {
@@ -302,46 +306,46 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                     accept_ratio = (double)sum / acceptWindow.size();
                 }
 
-
                 if (stagnation >= reset_threshold)
                 {
                     ops.resetWeights();
                     stagnation = 0;
                 }
             }
-            if (isPrint) {
+            if (isPrint)
+            {
                 std::cout << "Iteration " << iteration_count
-                      << ", Current Fitness: " << fitnessFunction()
-                      << ", Best Fitness: " << bestFitness
-                      << ", Cooling_rate = " << cooling_rate
-                      << ", Temperature: " << T << "\n";
+                          << ", Current Fitness: " << fitnessFunction()
+                          << ", Best Fitness: " << bestFitness
+                          << ", Cooling_rate = " << cooling_rate
+                          << ", Temperature: " << T << "\n";
             }
 
             double accept_ratio = (double)acceptedMoves / totalMoves;
             acceptedMoves = 0;
             totalMoves = 0;
 
-
             ops.updateWeights(adaptation_rate);
-            
+
             T *= cooling_rate;
         }
 
         int exploitNoImprove = 0;
-        int EXPLOIT_LIMIT = 3 * instance.job;
+        int EXPLOIT_LIMIT = 5 * instance.job;
+        double EPS = 1e-3; // tolerance rất nhỏ
 
         while (exploitNoImprove < EXPLOIT_LIMIT)
         {
-            int op = ops.selectOperator();   // hoặc cố định 1–2 op tốt nhất
+            int op = ops.selectOperator();
             std::vector<int> X_old = X;
             double oldFitness = fitnessFunction();
 
-            // block size cực nhỏ
             ops.apply(op, X, instance.mach, 1);
 
             double newFitness = fitnessFunction();
+            double delta = newFitness - oldFitness;
 
-            if (newFitness < oldFitness)
+            if (delta < 0)
             {
                 exploitNoImprove = 0;
 
@@ -350,6 +354,10 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                     Xb = X;
                     bestFitness = newFitness;
                 }
+            }
+            else if (delta < EPS) // cho phép xấu rất nhỏ
+            {
+                exploitNoImprove++;
             }
             else
             {
@@ -379,13 +387,15 @@ void midTemperatureEscape(double &T, int maxInnerIter)
                 if (X[j] == m_heavy)
                     jobs.push_back(j);
 
-            if (jobs.empty()) break;
+            if (jobs.empty())
+                break;
 
             int job = jobs[rng() % jobs.size()];
             int old_m = X[job];
 
             int new_m;
-            do {
+            do
+            {
                 new_m = rng() % instance.mach + 1;
             } while (new_m == old_m);
 
@@ -468,10 +478,10 @@ void midTemperatureEscape(double &T, int maxInnerIter)
 
         // Prefer jobs on heavily loaded machines
         std::sort(candidates.begin(), candidates.end(),
-                [&](int a, int b)
-                {
-                    return load[X[a]] > load[X[b]];
-                });
+                  [&](int a, int b)
+                  {
+                      return load[X[a]] > load[X[b]];
+                  });
 
         destroy_k = std::min(destroy_k, (int)candidates.size());
 
@@ -800,7 +810,7 @@ void midTemperatureEscape(double &T, int maxInnerIter)
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, true,3.0, 0.2, false},
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, true, 3.0, 0.2, false},
 
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, false, true,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, true, false,3.0, 0.2, false},
