@@ -1,5 +1,5 @@
-#ifndef SOLVER_H
-#define SOLVER_H
+#ifndef SOLVER_PURE_H
+#define SOLVER_PURE_H
 
 #include <iostream>
 #include "Instance.h"
@@ -8,7 +8,7 @@
 #include "Operators.h"
 #include <chrono>
 
-class Solver
+class SolverPure
 {
 public:
     std::mt19937 rng{std::random_device{}()};
@@ -26,7 +26,7 @@ public:
     double reheat_factor; double T_cap_factor;
     bool isPrint = false; bool isReheat = false;
 
-    Solver()
+    SolverPure()
     {
         if (instance.readFromFile("data/test2.txt"))
         {

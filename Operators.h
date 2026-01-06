@@ -91,9 +91,9 @@ public:
         score[op] += value;
     }
 
-    void penalize(int op)
+    void penalize(int op, double factor = 1.0)
     {
-        score[op] -= 0.1;
+        score[op] -= 0.1 * factor;
     }
 
     // ============================
