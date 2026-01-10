@@ -29,7 +29,7 @@ public:
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
     double penalty = penalty_factor;
-    bool isLNS = false;
+    bool isAdaptiveBlockSize = false;
     bool isAdaptivePenalty = false;
     bool isAdaptiveReward = false;
     double reheat_factor;
@@ -38,10 +38,12 @@ public:
     bool isEscape = false;
     int escape_fail_count = 0;
     int escape_phase = 0;
+    double eps_factor = 1e-3;
+    double eps = 1e-3;
 
     Solver()
     {
-        if (instance.readFromFile("data/test2.txt"))
+        if (instance.readFromFile("data/T_2151.txt"))
         {
             parameterTuning();
         }
@@ -79,108 +81,8 @@ public:
         }
     }
 
-    std::string makeLogFilename()
-    {
-        auto now = std::chrono::system_clock::now();
-        std::time_t t = std::chrono::system_clock::to_time_t(now);
-
-        std::tm tm{};
-#ifdef _WIN32
-        localtime_s(&tm, &t);
-#else
-        localtime_r(&t, &tm);
-#endif
-
-        std::ostringstream oss;
-        oss << "log/isa_log_"
-            << std::put_time(&tm, "%Y%m%d_%H%M%S")
-            << ".csv";
-
-        return oss.str();
-    }
-
-    void adaptiveEscape(double T)
-    {
-        int n = instance.job;
-        int m = instance.mach;
-
-        int strength = std::min(
-            n / 3,
-            3 + escape_fail_count * 2);
-
-        std::uniform_int_distribution<int> randJob(1, n);
-        std::uniform_int_distribution<int> randMach(1, m);
-
-        if (escape_phase == 0)
-        {
-            // ===== PHASE 0: RANDOM REASSIGN (PHÁ MẠNH) =====
-            for (int i = 0; i < strength; ++i)
-            {
-                int j = randJob(rng);
-                X[j] = randMach(rng);
-            }
-        }
-        else if (escape_phase == 1)
-        {
-            // ===== PHASE 1: SWAP JOBS BETWEEN MACHINES =====
-            for (int i = 0; i < strength; ++i)
-            {
-                int j1 = randJob(rng);
-                int j2 = randJob(rng);
-                std::swap(X[j1], X[j2]);
-            }
-        }
-        else
-        {
-            // ===== PHASE 2: SHUFFLE SUBSET =====
-            std::vector<int> subset;
-            for (int i = 0; i < strength * 2; ++i)
-                subset.push_back(randJob(rng));
-
-            std::shuffle(subset.begin(), subset.end(), rng);
-
-            for (int i = 0; i < (int)subset.size() - 1; ++i)
-                X[subset[i]] = X[subset[i + 1]];
-        }
-    }
-
-    void midTemperatureEscape(double &T, int maxInnerIter)
-    {
-        std::uniform_real_distribution<double> dist01(0.0, 1.0);
-        auto uniform01 = [&](std::mt19937 &rng)
-        {
-            return dist01(rng);
-        };
-        double savedT = T;
-        T *= 1.5; // reheat nhẹ
-        int escapeIter = maxInnerIter / 2;
-
-        for (int i = 0; i < escapeIter; ++i)
-        {
-            int op = ops.selectOperator();
-            std::vector<int> X_old = X;
-            double oldF = fitnessFunction();
-
-            ops.apply(op, X, instance.mach,
-                      std::max(1, (int)(0.2 * instance.job)));
-
-            double newF = fitnessFunction();
-            double prob = std::exp(-(newF - oldF) / T);
-
-            if (newF < oldF || uniform01(rng) < prob)
-                ops.reward(op, beta);
-            else
-                X = X_old;
-        }
-
-        T = savedT;
-    }
-
     void ISA()
     {
-        std::ofstream logFile(makeLogFilename());
-        logFile << "iter,type,temperature,oldFitness,newFitness,bestFitness,delta,improveTotal,stagnation\n";
-
         std::vector<int> Xb = X;
         double bestFitness = fitnessFunction();
         const int AR_WINDOW = 300;
@@ -214,8 +116,9 @@ public:
                 std::vector<int> X_old = X;
                 double oldFitness = fitnessFunction();
 
-                // ops.apply(op, X, instance.mach, blockSize);
-
+                if (!isAdaptiveBlockSize)
+                ops.apply(op, X, instance.mach, blockSize);
+                else
                 ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T / t0))));
                 totalMoves++;
 
@@ -225,10 +128,11 @@ public:
                 std::normal_distribution<double> ndist(0.0, 0.05 * T);
                 double noise = ndist(rng);
 
-                double delta_eff = (newFitness - oldFitness) + noise;
-                double prob = std::exp(-delta_eff / T);
+                // double delta_eff = (newFitness - oldFitness) + noise;
+                // double prob = std::exp(-delta_eff / T);
 
                 std::uniform_real_distribution<double> dist(0.0, 1.0);
+                double prob = std::exp(-(newFitness - oldFitness) / T);
                 double r = dist(rng);
 
                 if (newFitness < bestFitness)
@@ -250,14 +154,6 @@ public:
                         ops.reward(op, beta);
 
                     improve_total++;
-
-                    logFile << "[IMPROVE] "
-                            << "Iter=" << iteration_count
-                            << " | T=" << T
-                            << " | NewBest=" << bestFitness
-                            << " | Δ=" << (oldFitness - newFitness)
-                            << " | ImproveTotal=" << improve_total
-                            << "\n";
                 }
                 else if (newFitness < oldFitness)
                 {
@@ -291,21 +187,6 @@ public:
                         ops.penalize(op, 1.0);
                 }
 
-                if (accepted)
-                    acceptWindow.push_back(1);
-                else
-                    acceptWindow.push_back(0);
-
-                if ((int)acceptWindow.size() > AR_WINDOW)
-                    acceptWindow.pop_front();
-
-                double accept_ratio = 0.0;
-                if (!acceptWindow.empty())
-                {
-                    int sum = std::accumulate(acceptWindow.begin(), acceptWindow.end(), 0);
-                    accept_ratio = (double)sum / acceptWindow.size();
-                }
-
                 if (stagnation >= reset_threshold)
                 {
                     ops.resetWeights();
@@ -331,8 +212,8 @@ public:
         }
 
         int exploitNoImprove = 0;
-        int EXPLOIT_LIMIT = 5 * instance.job;
-        double EPS = 1e-3; // tolerance rất nhỏ
+        int EXPLOIT_LIMIT = eps_factor * instance.job;
+        double EPS = eps; // tolerance rất nhỏ
 
         while (exploitNoImprove < EXPLOIT_LIMIT)
         {
@@ -371,83 +252,6 @@ public:
         repair();
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
         // std::cout << "Total Energy Consumption: " << totalEnergyConsumption() << "\n";
-    }
-
-    bool lightLocalSearch(int maxSteps = 20)
-    {
-        double bestF = fitnessFunction();
-        bool improved = false;
-
-        for (int step = 0; step < maxSteps; ++step)
-        {
-            int m_heavy = findMaxLoadMachine();
-
-            std::vector<int> jobs;
-            for (int j = 1; j <= instance.job; ++j)
-                if (X[j] == m_heavy)
-                    jobs.push_back(j);
-
-            if (jobs.empty())
-                break;
-
-            int job = jobs[rng() % jobs.size()];
-            int old_m = X[job];
-
-            int new_m;
-            do
-            {
-                new_m = rng() % instance.mach + 1;
-            } while (new_m == old_m);
-
-            X[job] = new_m;
-            double newF = fitnessFunction();
-
-            if (newF < bestF)
-            {
-                bestF = newF;
-                improved = true;
-            }
-            else
-            {
-                X[job] = old_m;
-            }
-        }
-        return improved;
-    }
-
-    int findMaxLoadMachine()
-    {
-        std::vector<long long> load(instance.mach + 1, 0);
-
-        for (int j = 1; j <= instance.job; ++j)
-        {
-            int m = X[j];
-            load[m] += instance.proc_time[j];
-        }
-
-        int maxM = 1;
-        for (int m = 2; m <= instance.mach; ++m)
-        {
-            if (load[m] > load[maxM])
-                maxM = m;
-        }
-
-        return maxM;
-    }
-
-    int findMinLoadMachine()
-    {
-        std::vector<long long> load(instance.mach + 1, 0);
-
-        for (int j = 1; j <= instance.job; ++j)
-            load[X[j]] += instance.proc_time[j];
-
-        int minM = 1;
-        for (int m = 2; m <= instance.mach; ++m)
-            if (load[m] < load[minM])
-                minM = m;
-
-        return minM;
     }
 
     void apply_LNS_destroy_repair(int destroy_k)
@@ -798,19 +602,21 @@ public:
         double phi2;
         double penalty_factor;
         double t0_factor;
-        bool isLNS;
+        bool isAdaptiveBlockSize;
         bool isEscape;
         bool isAdaptivePenalty;
         bool isAdaptiveReward;
-        double reheat_factor;
-        double t_cap_factor;
+        double eps_factor;
+        double eps;
         bool isPrint;
     };
 
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, true, 3.0, 0.2, false},
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, true, 5, 1e-4, false},
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, false},
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, true, 5, 1e-4, false},
 
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, false, true,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, true, false,3.0, 0.2, false},
@@ -847,11 +653,13 @@ public:
             phi1_score_factor = p.phi1;
             phi2_score_factor = p.phi2;
             penalty_factor = p.penalty_factor;
-            isLNS = p.isLNS;
+            isAdaptiveBlockSize = p.isAdaptiveBlockSize;
             isAdaptivePenalty = p.isAdaptivePenalty;
             isAdaptiveReward = p.isAdaptiveReward;
             isEscape = p.isEscape;
             isPrint = p.isPrint;
+            eps_factor = p.eps_factor;
+            eps = p.eps;
 
             std::vector<double> results;
 

@@ -3,8 +3,8 @@ using namespace std;
 
 int main()
 {
-    const int MACH = 100;
-    const int JOB = 1000;
+    const int MACH = 200;
+    const int JOB = 2000;
     const double CTRL_FACTOR = 0.8;
 
     // Seed random
@@ -14,7 +14,7 @@ int main()
     uniform_int_distribution<int> proc_dist(0, 100); // proc_time: 0..100
     uniform_int_distribution<int> cost_dist(1, 10);  // unit_cost: 1..10
 
-    ofstream fout("test.txt");
+    ofstream fout("test2.txt");
     if (!fout.is_open())
     {
         cerr << "Cannot open file!\n";
