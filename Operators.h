@@ -233,6 +233,7 @@ private:
         for (int k = 0; k < blockSize; ++k)
             std::swap(X[idx1[s1 + k]], X[idx2[s2 + k]]);
     }
+
 };
 
 #endif

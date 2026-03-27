@@ -25,8 +25,9 @@ public:
     int upper_bound;
     int lower_bound;
     int bound;
-    double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
-    double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
+
+    double block_parametter = 0.4, cooling_rate = 0.9999, adaptation_rate = 0.15;
+    double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 100;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
     double penalty = penalty_factor;
     bool isAdaptiveBlockSize = false;
@@ -43,14 +44,15 @@ public:
 
     Solver()
     {
-        if (instance.readFromFile("data/T_2151.txt"))
-        {
-            parameterTuning();
-        }
-        else
-        {
-            std::cerr << "Không thể đọc dữ liệu instance!\n";
-        }
+        runAllInstances(1);
+        // if (instance.readFromFile("data/T_2160.txt"))
+        // {
+        //     parameterTuning();
+        // }
+        // else
+        // {
+        //     std::cerr << "Không thể đọc dữ liệu instance!\n";
+        // }
     }
 
     void init()
@@ -80,6 +82,77 @@ public:
                 break;
         }
     }
+
+    void runAllInstances(int numRuns)
+{
+    std::ofstream outFile("batch_results.csv");
+
+    if (!outFile.is_open())
+    {
+        std::cerr << "Cannot open output file!\n";
+        return;
+    }
+
+    outFile << "Instance,Run,Objective,Runtime\n";
+
+    for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
+    {
+        if (fileIdx >= 1600 && fileIdx <= 1800)
+            continue;
+
+        std::stringstream ss;
+        ss << "data/T_" << fileIdx << ".txt";
+        std::string filename = ss.str();
+
+        std::cout << "\n=== Running " << filename << " ===\n";
+
+        if (!instance.readFromFile(filename))
+        {
+            std::cout << "Cannot read file " << filename << "\n";
+            continue;
+        }
+
+        for (int run = 1; run <= numRuns; ++run)
+        {
+            // reset solution
+            X.clear();
+            X.resize(instance.job + 1, 1);
+            cost.clear();
+            cost.resize(instance.mach + 1, 0);
+
+            upper_bound = calculateUpper();
+            lower_bound = calculateLower();
+            bound = (1 - instance.ctrl_factor) * lower_bound +
+                    instance.ctrl_factor * upper_bound;
+
+            init();
+            t0 = 0.2 * totalCompletionTime() / log(2);
+
+            auto start_time = std::chrono::high_resolution_clock::now();
+
+            ISA();
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed = end_time - start_time;
+
+            double obj = totalCompletionTime();
+
+            std::cout << "Run " << run
+                      << " | Obj = " << obj
+                      << " | Time = " << elapsed.count() << " sec\n";
+
+            outFile << fileIdx << ","
+                    << run << ","
+                    << obj << ","
+                    << elapsed.count() << "\n";
+
+            outFile.flush();
+        }
+    }
+
+    outFile.close();
+    std::cout << "\n✅ Batch results saved to batch_results.csv\n";
+}
 
     void ISA()
     {
@@ -143,15 +216,16 @@ public:
                     noImproveIter = 0;
 
                     accepted = true;
+                    ops.reward(op, beta);
 
-                    if (isAdaptiveReward)
-                    {
-                        double delta = oldFitness - newFitness;
-                        double norm = delta / (oldFitness + 1e-9);
-                        ops.reward(op, beta * std::min(norm, 0.01));
-                    }
-                    else
-                        ops.reward(op, beta);
+                    // if (isAdaptiveReward)
+                    // {
+                    //     double delta = oldFitness - newFitness;
+                    //     double norm = delta / (oldFitness + 1e-9);
+                    //     ops.reward(op, beta * std::min(norm, 0.01));
+                    // }
+                    // else
+                    //     ops.reward(op, beta);
 
                     improve_total++;
                 }
@@ -160,8 +234,10 @@ public:
                     accepted = true;
                     stagnation++;
                     noImproveIter++;
+                    double scaled = (newFitness - oldFitness) / (abs(oldFitness) + 1e-9);
 
-                    ops.reward(op, phi1 * beta);
+
+                    ops.reward(op, beta *  scaled);
                 }
                 else if (r < prob)
                 {
@@ -169,7 +245,7 @@ public:
                     stagnation++;
                     noImproveIter++;
 
-                    ops.reward(op, phi2 * beta);
+                    ops.reward(op, 0.01);
                 }
                 else
                 {
@@ -209,42 +285,6 @@ public:
             ops.updateWeights(adaptation_rate);
 
             T *= cooling_rate;
-        }
-
-        int exploitNoImprove = 0;
-        int EXPLOIT_LIMIT = eps_factor * instance.job;
-        double EPS = eps; // tolerance rất nhỏ
-
-        while (exploitNoImprove < EXPLOIT_LIMIT)
-        {
-            int op = ops.selectOperator();
-            std::vector<int> X_old = X;
-            double oldFitness = fitnessFunction();
-
-            ops.apply(op, X, instance.mach, 1);
-
-            double newFitness = fitnessFunction();
-            double delta = newFitness - oldFitness;
-
-            if (delta < 0)
-            {
-                exploitNoImprove = 0;
-
-                if (newFitness < bestFitness)
-                {
-                    Xb = X;
-                    bestFitness = newFitness;
-                }
-            }
-            else if (delta < EPS) // cho phép xấu rất nhỏ
-            {
-                exploitNoImprove++;
-            }
-            else
-            {
-                X = X_old;
-                exploitNoImprove++;
-            }
         }
 
         X = Xb;
@@ -614,9 +654,8 @@ public:
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, true, 5, 1e-4, false},
-            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, false},
-            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, true, 5, 1e-4, false},
+            {0.9999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, false},
+
 
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, false, true,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, true, false,3.0, 0.2, false},
