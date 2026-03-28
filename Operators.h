@@ -10,8 +10,8 @@
 class Operators
 {
 public:
-    static constexpr int OP_COUNT = 4;
-    static constexpr double MIN_WEIGHT = 1e-6;
+    static constexpr int OP_COUNT = 6;
+    static constexpr double MIN_WEIGHT = 10e-3;
 
     std::mt19937 rng{std::random_device{}()};
 
@@ -63,7 +63,6 @@ public:
                int machCount,
                int blockSize)
     {
-
         switch (op)
         {
         case 0:
@@ -77,6 +76,12 @@ public:
             break;
         case 3:
             O4(X, machCount, blockSize);
+            break;
+        case 4:
+            O5_EjectionChain(X, machCount);
+            break;
+        case 5:
+            O6_BalanceMove(X, machCount);
             break;
         }
 
@@ -101,18 +106,23 @@ public:
     // ============================
     void updateWeights(double rho)
     {
+        // Tính avgScore cho từng op
+        std::vector<double> avgScore(OP_COUNT, 0.0);
+        for (int i = 0; i < OP_COUNT; ++i)
+            if (usage[i] > 0)
+                avgScore[i] = score[i] / usage[i];
+
+        // Shift về dương: trừ min rồi + epsilon
+        double minAvg = *std::min_element(avgScore.begin(), avgScore.end());
+        for (int i = 0; i < OP_COUNT; ++i)
+            avgScore[i] -= minAvg - 1e-3; // shift để min > 0
+
         for (int i = 0; i < OP_COUNT; ++i)
         {
             if (usage[i] > 0)
-            {
-                double avgScore = score[i] / usage[i];
-                weight[i] = (1.0 - rho) * weight[i] + rho * avgScore;
-            }
+                weight[i] = (1.0 - rho) * weight[i] + rho * avgScore[i];
 
-            // CLAMP weight
-            if (weight[i] < MIN_WEIGHT)
-                weight[i] = MIN_WEIGHT;
-
+            weight[i] = std::max(weight[i], MIN_WEIGHT);
             score[i] = 0.0;
             usage[i] = 0;
         }
@@ -234,6 +244,91 @@ private:
             std::swap(X[idx1[s1 + k]], X[idx2[s2 + k]]);
     }
 
+    // =====================================================
+    // O5: Ejection Chain
+    // =====================================================
+    void O5_EjectionChain(std::vector<int> &X, int machCount)
+    {
+        if (X.size() <= 2)
+            return;
+
+        int chainLength = 3 + rng() % 4; // chain 3-6
+
+        std::uniform_int_distribution<int> jobDist(1, X.size() - 1);
+
+        int job = jobDist(rng);
+        int currentMachine = X[job];
+
+        for (int step = 0; step < chainLength; ++step)
+        {
+            int nextMachine;
+            do
+            {
+                nextMachine = 1 + rng() % machCount;
+            } while (nextMachine == currentMachine);
+
+            // tìm job trên nextMachine để eject
+            std::vector<int> candidates;
+            for (int i = 1; i < (int)X.size(); ++i)
+                if (X[i] == nextMachine)
+                    candidates.push_back(i);
+
+            if (candidates.empty())
+            {
+                // nếu machine rỗng thì chỉ move job
+                X[job] = nextMachine;
+                return;
+            }
+
+            int nextJob = candidates[rng() % candidates.size()];
+
+            // eject
+            std::swap(X[job], X[nextJob]);
+
+            job = nextJob;
+            currentMachine = X[job];
+        }
+    }
+
+    // =====================================================
+    // O6: Move job from busiest machine to least loaded
+    // =====================================================
+    void O6_BalanceMove(std::vector<int> &X, int machCount)
+    {
+        if (X.size() <= 2)
+            return;
+
+        std::vector<int> load(machCount + 1, 0);
+
+        for (int i = 1; i < (int)X.size(); ++i)
+            load[X[i]]++;
+
+        int maxM = 1;
+        int minM = 1;
+
+        for (int m = 2; m <= machCount; ++m)
+        {
+            if (load[m] > load[maxM])
+                maxM = m;
+            if (load[m] < load[minM])
+                minM = m;
+        }
+
+        if (maxM == minM)
+            return;
+
+        // lấy job từ machine nhiều nhất
+        std::vector<int> jobs;
+        for (int i = 1; i < (int)X.size(); ++i)
+            if (X[i] == maxM)
+                jobs.push_back(i);
+
+        if (jobs.empty())
+            return;
+
+        int job = jobs[rng() % jobs.size()];
+        X[job] = minM;
+    }
 };
 
 #endif

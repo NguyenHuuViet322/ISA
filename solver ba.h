@@ -22,9 +22,12 @@ public:
     double block_parametter = 0.4, cooling_rate = 0.995, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 300;
     double penalty_factor = 50, t0 = 1000.0, beta = 15;
-    double penalty = penalty_factor; bool isLNS = false;
-    double reheat_factor; double T_cap_factor;
-    bool isPrint = false; bool isReheat = false;
+    double penalty = penalty_factor;
+    bool isLNS = false;
+    double reheat_factor;
+    double T_cap_factor;
+    bool isPrint = false;
+    bool isReheat = false;
 
     Solver()
     {
@@ -93,7 +96,6 @@ public:
         double reheat_factor = 3;
         int max_reheat = 5;
 
-
         while (T > 1e-4)
         {
             for (int iter = 0; iter < maxInnerIter; ++iter)
@@ -145,7 +147,8 @@ public:
                     stagnation = 0;
                 }
 
-                if (isReheat) {
+                if (isReheat)
+                {
                     if (iteration_count % window_size == 0)
                     {
                         if (T < T_low &&
@@ -160,11 +163,12 @@ public:
                     }
                 }
             }
-            if (isPrint) {
+            if (isPrint)
+            {
                 std::cout << "Iteration " << iteration_count
-                      << ", Current Fitness: " << fitnessFunction()
-                      << ", Best Fitness: " << bestFitness
-                      << ", Temperature: " << T << "\n";
+                          << ", Current Fitness: " << fitnessFunction()
+                          << ", Best Fitness: " << bestFitness
+                          << ", Temperature: " << T << "\n";
             }
 
             ops.updateWeights(adaptation_rate);

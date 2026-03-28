@@ -44,15 +44,15 @@ public:
 
     Solver()
     {
-        runAllInstances(1);
-        // if (instance.readFromFile("data/T_2160.txt"))
-        // {
-        //     parameterTuning();
-        // }
-        // else
-        // {
-        //     std::cerr << "Không thể đọc dữ liệu instance!\n";
-        // }
+        // runAllInstances(1);
+        if (instance.readFromFile("data/T_2151.txt"))
+        {
+            parameterTuning();
+        }
+        else
+        {
+            std::cerr << "Không thể đọc dữ liệu instance!\n";
+        }
     }
 
     void init()
@@ -84,75 +84,75 @@ public:
     }
 
     void runAllInstances(int numRuns)
-{
-    std::ofstream outFile("batch_results.csv");
-
-    if (!outFile.is_open())
     {
-        std::cerr << "Cannot open output file!\n";
-        return;
-    }
+        std::ofstream outFile("batch_results.csv");
 
-    outFile << "Instance,Run,Objective,Runtime\n";
-
-    for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
-    {
-        if (fileIdx >= 1600 && fileIdx <= 1800)
-            continue;
-
-        std::stringstream ss;
-        ss << "data/T_" << fileIdx << ".txt";
-        std::string filename = ss.str();
-
-        std::cout << "\n=== Running " << filename << " ===\n";
-
-        if (!instance.readFromFile(filename))
+        if (!outFile.is_open())
         {
-            std::cout << "Cannot read file " << filename << "\n";
-            continue;
+            std::cerr << "Cannot open output file!\n";
+            return;
         }
 
-        for (int run = 1; run <= numRuns; ++run)
+        outFile << "Instance,Run,Objective,Runtime\n";
+
+        for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
         {
-            // reset solution
-            X.clear();
-            X.resize(instance.job + 1, 1);
-            cost.clear();
-            cost.resize(instance.mach + 1, 0);
+            if (fileIdx >= 1600 && fileIdx <= 1800)
+                continue;
 
-            upper_bound = calculateUpper();
-            lower_bound = calculateLower();
-            bound = (1 - instance.ctrl_factor) * lower_bound +
-                    instance.ctrl_factor * upper_bound;
+            std::stringstream ss;
+            ss << "data/T_" << fileIdx << ".txt";
+            std::string filename = ss.str();
 
-            init();
-            t0 = 0.2 * totalCompletionTime() / log(2);
+            std::cout << "\n=== Running " << filename << " ===\n";
 
-            auto start_time = std::chrono::high_resolution_clock::now();
+            if (!instance.readFromFile(filename))
+            {
+                std::cout << "Cannot read file " << filename << "\n";
+                continue;
+            }
 
-            ISA();
+            for (int run = 1; run <= numRuns; ++run)
+            {
+                // reset solution
+                X.clear();
+                X.resize(instance.job + 1, 1);
+                cost.clear();
+                cost.resize(instance.mach + 1, 0);
 
-            auto end_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> elapsed = end_time - start_time;
+                upper_bound = calculateUpper();
+                lower_bound = calculateLower();
+                bound = (1 - instance.ctrl_factor) * lower_bound +
+                        instance.ctrl_factor * upper_bound;
 
-            double obj = totalCompletionTime();
+                init();
+                t0 = 0.2 * totalCompletionTime() / log(2);
 
-            std::cout << "Run " << run
-                      << " | Obj = " << obj
-                      << " | Time = " << elapsed.count() << " sec\n";
+                auto start_time = std::chrono::high_resolution_clock::now();
 
-            outFile << fileIdx << ","
-                    << run << ","
-                    << obj << ","
-                    << elapsed.count() << "\n";
+                ISA();
 
-            outFile.flush();
+                auto end_time = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = end_time - start_time;
+
+                double obj = totalCompletionTime();
+
+                std::cout << "Run " << run
+                          << " | Obj = " << obj
+                          << " | Time = " << elapsed.count() << " sec\n";
+
+                outFile << fileIdx << ","
+                        << run << ","
+                        << obj << ","
+                        << elapsed.count() << "\n";
+
+                outFile.flush();
+            }
         }
-    }
 
-    outFile.close();
-    std::cout << "\n✅ Batch results saved to batch_results.csv\n";
-}
+        outFile.close();
+        std::cout << "\n✅ Batch results saved to batch_results.csv\n";
+    }
 
     void ISA()
     {
@@ -166,7 +166,7 @@ public:
         int maxInnerIter = std::ceil((double)instance.job / instance.mach);
         int blockSize = std::max(1, (int)(block_parametter * instance.job));
 
-        double beta = 15.0;
+        double beta = 50.0;
         double phi1 = phi1_score_factor;
         double phi2 = phi2_score_factor;
         int iteration_count = 0;
@@ -178,6 +178,10 @@ public:
         int noImproveIter = 0;
         int maxReheat = 5;
         double tau = T / t0;
+        std::vector<int> bestImprovCount(6, 0);  // thêm vào ISA
+        std::vector<int> localImprovCount(6, 0); // cải thiện so với current
+        std::vector<int> acceptCount(6, 0);      // accepted (kể cả SA accept)
+        std::vector<int> usageCount(6, 0);
 
         while (T > 1e-4)
         {
@@ -190,10 +194,19 @@ public:
                 double oldFitness = fitnessFunction();
 
                 if (!isAdaptiveBlockSize)
-                ops.apply(op, X, instance.mach, blockSize);
+                    ops.apply(op, X, instance.mach, blockSize);
                 else
-                ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T / t0))));
+                    ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T / t0))));
                 totalMoves++;
+                usageCount[op]++;
+
+                if (iteration_count % 1000 == 0)
+                {
+                    std::cout << "Weights: ";
+                    for (auto w : ops.weight)
+                        std::cout << w << " ";
+                    std::cout << "\n";
+                }
 
                 double newFitness = fitnessFunction();
 
@@ -217,6 +230,7 @@ public:
 
                     accepted = true;
                     ops.reward(op, beta);
+                    bestImprovCount[op]++;
 
                     // if (isAdaptiveReward)
                     // {
@@ -231,21 +245,22 @@ public:
                 }
                 else if (newFitness < oldFitness)
                 {
+
                     accepted = true;
                     stagnation++;
                     noImproveIter++;
-                    double scaled = (newFitness - oldFitness) / (abs(oldFitness) + 1e-9);
-
-
-                    ops.reward(op, beta *  scaled);
+                    double delta = oldFitness - newFitness;
+                    double scaled = delta / (abs(oldFitness) + 1e-9);
+                    localImprovCount[op]++;
+                    ops.reward(op, beta * scaled);
                 }
                 else if (r < prob)
                 {
                     accepted = true;
                     stagnation++;
                     noImproveIter++;
-
-                    ops.reward(op, 0.01);
+                    acceptCount[op]++;
+                    ops.reward(op, 0.05);
                 }
                 else
                 {
@@ -260,7 +275,7 @@ public:
                         ops.penalize(op, factor);
                     }
                     else
-                        ops.penalize(op, 1.0);
+                        ops.penalize(op, 0.95);
                 }
 
                 if (stagnation >= reset_threshold)
@@ -289,6 +304,28 @@ public:
 
         X = Xb;
 
+        std::cout << "\n=== Operator Analysis ===\n";
+        std::cout << std::setw(5) << "Op"
+                  << std::setw(10) << "Usage"
+                  << std::setw(12) << "BestImprov"
+                  << std::setw(12) << "LocalImprov"
+                  << std::setw(10) << "Accept"
+                  << std::setw(12) << "BestRate%"
+                  << std::setw(12) << "LocalRate%"
+                  << "\n";
+        for (int i = 0; i < 6; ++i)
+        {
+            double bestRate = 100.0 * bestImprovCount[i] / std::max(1, usageCount[i]);
+            double localRate = 100.0 * localImprovCount[i] / std::max(1, usageCount[i]);
+            std::cout << std::setw(5) << i
+                      << std::setw(10) << usageCount[i]
+                      << std::setw(12) << bestImprovCount[i]
+                      << std::setw(12) << localImprovCount[i]
+                      << std::setw(10) << acceptCount[i]
+                      << std::setw(11) << std::fixed << std::setprecision(2) << bestRate << "%"
+                      << std::setw(11) << localRate << "%"
+                      << "\n";
+        }
         repair();
         std::cout << "Total Completion Time: " << totalCompletionTime() << "\n";
         // std::cout << "Total Energy Consumption: " << totalEnergyConsumption() << "\n";
@@ -654,8 +691,7 @@ public:
     void parameterTuning()
     {
         std::vector<ParameterSet> params = {
-            {0.9999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, false},
-
+            {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, true},
 
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, false, true,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, true, false,3.0, 0.2, false},
