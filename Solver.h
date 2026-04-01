@@ -26,9 +26,9 @@ public:
     int lower_bound;
     int bound;
 
-    double block_parametter = 0.4, cooling_rate = 0.9999, adaptation_rate = 0.15;
+    double block_parametter = 0.4, cooling_rate = 0.999, adaptation_rate = 0.15;
     double phi1_score_factor = 0.8, phi2_score_factor = 0.7, reset_threshold = 100;
-    double penalty_factor = 50, t0 = 1000.0, beta = 15;
+    double penalty_factor = 50, t0 = 1000.0, beta = 50;
     double penalty = penalty_factor;
     bool isAdaptiveBlockSize = false;
     bool isAdaptivePenalty = false;
@@ -44,15 +44,15 @@ public:
 
     Solver()
     {
-        // runAllInstances(1);
-        if (instance.readFromFile("data/T_2151.txt"))
-        {
-            parameterTuning();
-        }
-        else
-        {
-            std::cerr << "Không thể đọc dữ liệu instance!\n";
-        }
+        // runAllInstances(10);
+        // if (instance.readFromFile("data/T_2140.txt"))
+        // {
+        //     parameterTuning();
+        // }
+        // else
+        // {
+        //     std::cerr << "Không thể đọc dữ liệu instance!\n";
+        // }
     }
 
     void init()
@@ -97,8 +97,8 @@ public:
 
         for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
         {
-            if (fileIdx >= 1600 && fileIdx <= 1800)
-                continue;
+            // if (fileIdx >= 1600 && fileIdx <= 1800)
+            //     continue;
 
             std::stringstream ss;
             ss << "data/T_" << fileIdx << ".txt";
@@ -166,7 +166,7 @@ public:
         int maxInnerIter = std::ceil((double)instance.job / instance.mach);
         int blockSize = std::max(1, (int)(block_parametter * instance.job));
 
-        double beta = 50.0;
+        double beta = 15.0;
         double phi1 = phi1_score_factor;
         double phi2 = phi2_score_factor;
         int iteration_count = 0;
@@ -194,19 +194,12 @@ public:
                 double oldFitness = fitnessFunction();
 
                 if (!isAdaptiveBlockSize)
-                    ops.apply(op, X, instance.mach, blockSize);
+                    ops.apply(op, X, instance.mach, blockSize, instance.proc_time);
                 else
-                    ops.apply(op, X, instance.mach, std::max(1, (int)(block_parametter * instance.job * (T / t0))));
+                    ops.apply(op, X, instance.mach, blockSize, instance.proc_time);
                 totalMoves++;
                 usageCount[op]++;
 
-                if (iteration_count % 1000 == 0)
-                {
-                    std::cout << "Weights: ";
-                    for (auto w : ops.weight)
-                        std::cout << w << " ";
-                    std::cout << "\n";
-                }
 
                 double newFitness = fitnessFunction();
 
@@ -693,7 +686,7 @@ public:
         std::vector<ParameterSet> params = {
             {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, true, false, false, false, 5, 1e-4, true},
 
-            // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, false, true,3.0, 0.2, false},
+            // {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, false,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.4, 0.3, 50, 0.2, false, false, true, false,3.0, 0.2, false},
             // {0.999, 0.15, 0.4, 100, 0.8, 0.7, 50, 0.2, false, false, false, false,3.0, 0.2, false},
 
@@ -738,7 +731,7 @@ public:
 
             std::vector<double> results;
 
-            for (int run = 0; run < 20; ++run)
+            for (int run = 0; run < 1; ++run)
             {
                 X.clear();
                 X.resize(instance.job + 1, 1);

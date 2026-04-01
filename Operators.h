@@ -10,7 +10,7 @@
 class Operators
 {
 public:
-    static constexpr int OP_COUNT = 6;
+    static constexpr int OP_COUNT = 3;
     static constexpr double MIN_WEIGHT = 10e-3;
 
     std::mt19937 rng{std::random_device{}()};
@@ -61,7 +61,9 @@ public:
     void apply(int op,
                std::vector<int> &X,
                int machCount,
-               int blockSize)
+               int blockSize,
+            std::vector<int> procTime = std::vector<int>()
+        )
     {
         switch (op)
         {
@@ -72,17 +74,17 @@ public:
             O2(X);
             break;
         case 2:
-            O3(X, machCount, blockSize);
-            break;
-        case 3:
-            O4(X, machCount, blockSize);
-            break;
-        case 4:
             O5_EjectionChain(X, machCount);
             break;
-        case 5:
-            O6_BalanceMove(X, machCount);
-            break;
+        // case 3:
+        //     O4(X, machCount, blockSize);
+        //     break;
+        // case 4:
+        //     O5_EjectionChain(X, machCount);
+        //     break;
+        // case 5:
+        //     O6_DoubleBridge(X, machCount);
+        //     break;
         }
 
         usage[op]++;
@@ -290,45 +292,87 @@ private:
         }
     }
 
-    // =====================================================
-    // O6: Move job from busiest machine to least loaded
-    // =====================================================
-    void O6_BalanceMove(std::vector<int> &X, int machCount)
+    void O6_DoubleBridge(std::vector<int> &X, int machCount)
     {
-        if (X.size() <= 2)
-            return;
+        int n = X.size() - 1;
+        if (n < 4) return;
 
-        std::vector<int> load(machCount + 1, 0);
+        // Chọn 4 vị trí ngẫu nhiên không trùng
+        std::uniform_int_distribution<int> dist(1, n);
+        int a, b, c, d;
+        do { a = dist(rng); } while (false);
+        do { b = dist(rng); } while (b == a);
+        do { c = dist(rng); } while (c == a || c == b);
+        do { d = dist(rng); } while (d == a || d == b || d == c);
 
-        for (int i = 1; i < (int)X.size(); ++i)
-            load[X[i]]++;
+        // Reassign 4 job sang 4 machine ngẫu nhiên hoàn toàn
+        std::uniform_int_distribution<int> machDist(1, machCount);
+        X[a] = machDist(rng);
+        X[b] = machDist(rng);
+        X[c] = machDist(rng);
+        X[d] = machDist(rng);
+    }
 
-        int maxM = 1;
-        int minM = 1;
+    void O5_EjectionChain_Improved(std::vector<int> &X, int machCount)
+{
+    int n = X.size();
+    if (n <= 2) return;
 
-        for (int m = 2; m <= machCount; ++m)
+    std::uniform_int_distribution<int> jobDist(1, n - 1);
+
+    int chainLength = 3 + rng() % 4; // 3–6
+
+    std::vector<int> jobs;
+    std::vector<int> machines;
+
+    // 1. chọn job đầu
+    int startJob = jobDist(rng);
+    jobs.push_back(startJob);
+    machines.push_back(X[startJob]);
+
+    int currentMachine = X[startJob];
+
+    // 2. build chain
+    for (int step = 1; step < chainLength; ++step)
+    {
+        int nextMachine;
+        do {
+            nextMachine = 1 + rng() % machCount;
+        } while (nextMachine == currentMachine);
+
+        // tìm job trên machine đó
+        std::vector<int> candidates;
+        for (int i = 1; i < n; ++i)
+            if (X[i] == nextMachine)
+                candidates.push_back(i);
+
+        if (candidates.empty())
         {
-            if (load[m] > load[maxM])
-                maxM = m;
-            if (load[m] < load[minM])
-                minM = m;
+            // nếu machine rỗng → kết thúc chain sớm
+            break;
         }
 
-        if (maxM == minM)
-            return;
+        int nextJob = candidates[rng() % candidates.size()];
 
-        // lấy job từ machine nhiều nhất
-        std::vector<int> jobs;
-        for (int i = 1; i < (int)X.size(); ++i)
-            if (X[i] == maxM)
-                jobs.push_back(i);
+        jobs.push_back(nextJob);
+        machines.push_back(nextMachine);
 
-        if (jobs.empty())
-            return;
-
-        int job = jobs[rng() % jobs.size()];
-        X[job] = minM;
+        currentMachine = nextMachine;
     }
+
+    int k = jobs.size();
+    if (k <= 1) return;
+
+    // 3. ROTATION (quan trọng nhất)
+    int lastMachine = machines.back();
+
+    for (int i = k - 1; i > 0; --i)
+    {
+        X[jobs[i]] = machines[i - 1];
+    }
+
+    X[jobs[0]] = lastMachine;
+}
 };
 
 #endif

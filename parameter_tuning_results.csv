@@ -1,0 +1,2 @@
+cooling_rate,adaptation_rate,block_param,reset_threshold,phi1,phi2,penalty_factor,t0_factor,best,worst,avg,stddev
+0.999000,0.150000,0.400000,100,0.800000,0.700000,50.000000,0.200000,566140.000000,566140.000000,566140.000000,0.000000
