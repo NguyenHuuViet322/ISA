@@ -12,6 +12,9 @@ class Operators
 public:
     static constexpr int OP_COUNT = 4;
     static constexpr double MIN_WEIGHT = 10e-3;
+    enum class OperatorMode { STANDARD, SMART };
+
+    OperatorMode mode = OperatorMode::STANDARD;
 
     std::mt19937 rng{std::random_device{}()};
 
@@ -59,34 +62,23 @@ public:
     // Apply selected operator
     // ============================
     void apply(int op,
-               std::vector<int> &X,
-               int machCount,
-               int blockSize,
-            std::vector<int> procTime = std::vector<int>()
-        )
+           std::vector<int> &X,
+           int machCount,
+           int blockSize,
+           std::vector<int> procTime = std::vector<int>())
     {
         switch (op)
         {
-        case 0:
-            O1(X, machCount);
-            break;
-        case 1:
-            O2(X);
-            break;
-        case 2:
-            O4(X, machCount, blockSize);
-            break;
+        case 0: O1(X, machCount); break;
+        case 1: O2(X); break;
+        case 2: O4(X, machCount, blockSize); break;
         case 3:
-            O3_SmartBlock(X, machCount, blockSize, procTime);
+            if (mode == OperatorMode::SMART)
+                O3_SmartBlock(X, machCount, blockSize, procTime);
+            else
+                O3(X, machCount, blockSize);
             break;
-        // case 4:
-        //     O5_EjectionChain(X, machCount);
-        //     break;
-        // case 5:
-        //     O6_DoubleBridge(X, machCount);
-        //     break;
         }
-
         usage[op]++;
     }
 
@@ -231,6 +223,8 @@ private:
     for (int k = bestStart; k < bestStart + blockSize; ++k)
         X[idx[k]] = m2;
 }
+
+
 
     // =====================================================
     // O4: Exchange blocks between two machines

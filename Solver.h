@@ -90,7 +90,8 @@ public:
     Solver()
     {
         // runSingle("data/T_2160.txt", 20, 4);
-        runAllInstances(10);
+        // runAllInstances(10);
+        runBigData(10);
     }
 
     // ─────────────────────────────────────────────
@@ -199,7 +200,7 @@ public:
                 load_snap = machLoad;
                 cnt_snap  = machJobCount;
 
-                ops.apply(op, X, instance.mach, blockSize, instance.proc_time);
+                ops.apply(op, X, instance.mach, blockSize, instance.proc_time, machLoad);
 
                 rebuildCache();
                 redistrubutionBasedOnCost();
@@ -379,6 +380,116 @@ public:
         }
         outFile.close();
     }
+
+    void runBigData(int numRuns)
+{
+    std::ofstream outFile("big_data_results.csv");
+    if (!outFile.is_open())
+    {
+        std::cerr << "Cannot open output file!\n";
+        return;
+    }
+    outFile << "Folder,Instance,Mode,Run,Objective,Runtime,Iterations\n";
+    outFile.flush();
+
+    struct FolderInfo {
+        std::string name;
+        double timeLimit;
+    };
+
+    std::vector<FolderInfo> folders = {
+        // {"200_2000",  5},
+        // {"200_5000",  5},
+        {"500_10000", 5}
+    };
+
+    std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
+
+    struct ModeInfo {
+        Operators::OperatorMode mode;
+        std::string  label;
+    };
+    std::vector<ModeInfo> modes = {
+        { Operators::OperatorMode::STANDARD, "STANDARD" },
+        { Operators::OperatorMode::SMART,    "SMART"    }
+    };
+
+    for (const auto& folder : folders)
+    {
+        std::string basePath = "data/big_data/" + folder.name + "/";
+        time_limit = folder.timeLimit;
+
+        std::cout << "\n========== Folder: " << folder.name
+                  << " | TimeLimit=" << folder.timeLimit << "s ==========\n";
+        std::cout.flush();
+
+        for (const auto& prefix : prefixes)
+        {
+            for (int idx = 1; idx <= 5; ++idx)
+            {
+                std::string filename  = basePath + prefix + "_" + std::to_string(idx) + ".txt";
+                std::string instName  = prefix + "_" + std::to_string(idx);
+
+                if (!instance.readFromFile(filename))
+                {
+                    std::cerr << "Cannot read: " << filename << "\n";
+                    continue;
+                }
+
+                upper_bound = (int)calculateUpper();
+                lower_bound = (int)calculateLower();
+                bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
+                               instance.ctrl_factor * upper_bound);
+
+                std::cout << "[" << folder.name << "] " << instName
+                          << " | Jobs=" << instance.job
+                          << " Machines=" << instance.mach << "\n";
+                std::cout.flush();
+
+                for (const auto& modeInfo : modes)
+                {
+                    ops.mode = modeInfo.mode;  
+
+                    std::cout << "  -- Mode: " << modeInfo.label << " --\n";
+                    std::cout.flush();
+
+                    for (int run = 1; run <= numRuns; ++run)
+                    {
+                        X.assign(instance.job + 1, 1);
+                        ops.resetWeights();
+                        init();
+                        t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+                        auto start_time = std::chrono::high_resolution_clock::now();
+                        int iterCount   = ISA(start_time);
+                        auto end_time   = std::chrono::high_resolution_clock::now();
+
+                        std::chrono::duration<double> elapsed = end_time - start_time;
+                        double obj = computeTCT_fromCache();
+
+                        outFile << folder.name << ',' << instName << ','
+                        << modeInfo.label << ','
+                        << run << ','
+                        << (long long)obj << ','
+                        << std::fixed << std::setprecision(3) << elapsed.count() << ','
+                        << iterCount << '\n';
+                        outFile.flush();
+
+                        std::cout << "    Run " << run
+                                  << " | TCT="  << obj
+                                  << " | Iter=" << iterCount
+                                  << " | Time=" << std::fixed << std::setprecision(3)
+                                  << elapsed.count() << "s\n";
+                        std::cout.flush();
+                    }
+                }
+            }
+        }
+    }
+
+    outFile.close();
+    std::cout << "\nDone! Results saved to big_data_results.csv\n";
+}
 
     // ─────────────────────────────────────────────
     // Repair
