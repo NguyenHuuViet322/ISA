@@ -65,7 +65,8 @@ public:
            std::vector<int> &X,
            int machCount,
            int blockSize,
-           std::vector<int> procTime = std::vector<int>())
+           std::vector<int>       procTime  = std::vector<int>(),
+           std::vector<long long> machLoad  = std::vector<long long>())
     {
         switch (op)
         {
@@ -73,10 +74,7 @@ public:
         case 1: O2(X); break;
         case 2: O4(X, machCount, blockSize); break;
         case 3:
-            if (mode == OperatorMode::SMART)
-                O3_SmartBlock(X, machCount, blockSize, procTime);
-            else
-                O3(X, machCount, blockSize);
+            O3_SmartBlock(X, machCount, blockSize, procTime);
             break;
         }
         usage[op]++;
