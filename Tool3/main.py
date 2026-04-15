@@ -3,7 +3,20 @@ from pathlib import Path
 import pandas as pd
 
 DATA_DIR = Path("data")
-OUT_CSV = "summary_mean_obj_by_test.csv"
+OUT_CSV  = "summary_obj_by_test.csv"
+
+# ── Các cột thống kê giữ lại cho mỗi file × test ────────────────────────────
+# Thay đổi danh sách này nếu muốn thêm/bớt cột
+KEEP_STATS = [
+    "obj_best",
+    "obj_mean",
+    "runtime_mean",
+]
+
+# ── Cột chung (giống nhau giữa các file, chỉ lấy 1 lần) ─────────────────────
+SHARED_COLS = ["mach", "job", "lower_cost", "upper_cost"]
+
+# ────────────────────────────────────────────────────────────────────────────
 
 def parse_test_range_from_filename(name: str):
     m = re.search(r"[Ii]_(\d+)_(\d+)", name)
@@ -13,31 +26,19 @@ def parse_test_range_from_filename(name: str):
 
 def read_table_any(path: Path) -> pd.DataFrame:
     head = path.read_bytes()[:128]
-
-    # TSV text giả .xls
     if b"\t" in head and (b"obj\t" in head or b"obj\titer" in head):
         return pd.read_csv(path, sep="\t", engine="python")
-    # CSV text giả .xls
     if b"," in head and (b"obj," in head or b"obj,iter" in head):
         return pd.read_csv(path, sep=",", engine="python")
-
-    # Excel thật
     if path.suffix.lower() == ".xlsx":
         return pd.read_excel(path, engine="openpyxl")
-    else:
-        # pip install xlrd==2.0.1 (chỉ khi có xls binary thật)
-        return pd.read_excel(path, engine="xlrd")
+    return pd.read_excel(path, engine="xlrd")
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # strip + lower
     df.columns = [str(c).strip() for c in df.columns]
-
-    # bỏ các cột Unnamed
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed", na=False)]
-
-    # map các biến thể tên cột về chuẩn
     col_map = {
-        "lower_cos": "lower_cost",
+        "lower_cos":  "lower_cost",
         "lower_cost": "lower_cost",
         "upper_csot": "upper_cost",
         "upper_cost": "upper_cost",
@@ -45,56 +46,66 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns={c: col_map.get(c, c) for c in df.columns})
     return df
 
+def agg_group(g: pd.DataFrame) -> pd.Series:
+    obj = g["obj"]
+    rt  = g["runtime"]
+    best_idx = obj.idxmin()
+    return pd.Series({
+        "obj_best":            obj.min(),
+        "obj_mean":            obj.mean(),
+        "obj_std":             obj.std(ddof=1) if len(obj) > 1 else 0.0,
+        "runtime_mean":        rt.mean(),
+        "runtime_at_best_obj": g.loc[best_idx, "runtime"],
+        "n_runs":              len(obj),
+        "n_best_hit":          int((obj == obj.min()).sum()),
+        # shared
+        "lower_cost":          g["lower_cost"].iloc[0],
+        "upper_cost":          g["upper_cost"].iloc[0],
+        "mach":                g["mach"].iloc[0],
+        "job":                 g["job"].iloc[0],
+    })
+
 def process_file(path: Path) -> pd.DataFrame:
     df = read_table_any(path)
     df = normalize_columns(df)
 
-    required = ["obj", "lower_cost", "upper_cost"]
+    required = ["obj", "lower_cost", "upper_cost", "mach", "job", "runtime"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Thiếu cột {missing}. Cột hiện có: {list(df.columns)}")
-
-    # --- thêm 3 cột mới ---
-    extra_cols = ["mach", "job", "runtime"]
-    missing_extra = [c for c in extra_cols if c not in df.columns]
-    if missing_extra:
-        raise ValueError(f"Thiếu cột {missing_extra} trong file {path.name}")
 
     start_test, end_test = parse_test_range_from_filename(path.stem)
     if start_test is None:
         raise ValueError(f"Không parse được range test từ tên file: {path.name}")
 
-    # mỗi lần (lower_cost, upper_cost) đổi => test mới
-    cost = df[["lower_cost", "upper_cost"]].copy()
+    cost    = df[["lower_cost", "upper_cost"]].copy()
     changed = (cost != cost.shift(1)).any(axis=1)
     changed.iloc[0] = True
-    seg_id = changed.cumsum()
-
-    df["_test_num"] = start_test + (seg_id - 1)
+    df["_test_num"] = start_test + (changed.cumsum() - 1)
 
     out = (
         df.groupby("_test_num", as_index=False)
-          .agg(
-              mean_obj=("obj", "mean"),
-              n_rows=("obj", "size"),
-              lower_cost=("lower_cost", "first"),
-              upper_cost=("upper_cost", "first"),
-              mach=("mach", "first"),
-              job=("job", "first"),
-              mean_runtime=("runtime", "mean"),   # lấy trung bình runtime
-          )
+          .apply(agg_group)
+          .reset_index(drop=True)
     )
-
-    out.insert(0, "file", path.name)
-    out.insert(1, "test_id", out["_test_num"].map(lambda x: f"T_{x}"))
+    out["test_id"] = out["_test_num"].map(lambda x: f"T_{x}")
     out = out.drop(columns=["_test_num"])
 
     if end_test is not None:
-        max_test = int(out["test_id"].str.replace("T_", "", regex=False).max())
-        if max_test > end_test:
-            print(f"[WARN] {path.name}: test tới T_{max_test} > T_{end_test} (check dữ liệu)")
+        max_t = out["test_id"].str.replace("T_", "", regex=False).astype(int).max()
+        if max_t > end_test:
+            print(f"[WARN] {path.name}: test tới T_{max_t} > T_{end_test}")
 
     return out
+
+def make_short_label(path: Path, existing: set) -> str:
+    """Rút gọn tên file thành label ngắn dùng làm prefix cột, đảm bảo unique."""
+    stem = path.stem
+    stem = re.sub(r"[_\-][Ii]_\d+_\d+$", "", stem)   # bỏ _I_x_y ở cuối
+    label = stem
+    if label in existing:
+        label = f"{stem}_{path.stem[-4:]}"
+    return label
 
 def main():
     files = sorted(
@@ -104,23 +115,38 @@ def main():
     if not files:
         raise SystemExit(f"Không tìm thấy file trong {DATA_DIR.resolve()}")
 
-    all_rows = []
+    frames: dict[str, pd.DataFrame] = {}
+    used_labels: set = set()
+
     for p in files:
         try:
-            all_rows.append(process_file(p))
-            print(f"OK: {p.name}")
+            df = process_file(p)
+            label = make_short_label(p, used_labels)
+            used_labels.add(label)
+            frames[label] = df.set_index("test_id")
+            print(f"OK: {p.name}  →  label='{label}'")
         except Exception as e:
             print(f"FAIL: {p.name} -> {e}")
 
-    if not all_rows:
+    if not frames:
         raise SystemExit("Không có file nào xử lý thành công.")
 
-    result = pd.concat(all_rows, ignore_index=True)
+    # ── Long format: mỗi file × test = 1 hàng ───────────────────────────────
+    rows = []
+    for label, df in frames.items():
+        sub = df[SHARED_COLS + KEEP_STATS].copy()
+        sub.insert(0, "algo", label)
+        rows.append(sub)
+
+    result = pd.concat(rows, axis=0).reset_index()   # test_id trở lại thành cột
+
+    # Sắp xếp theo số test rồi theo algo
     result["_t"] = result["test_id"].str.replace("T_", "", regex=False).astype(int)
-    result = result.sort_values(["_t", "file"]).drop(columns=["_t"])
+    result = result.sort_values(["_t", "algo"]).drop(columns=["_t"]).reset_index(drop=True)
 
     result.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-    print(f"\nĐã xuất: {OUT_CSV} (rows={len(result)})")
+    print(f"\nĐã xuất: {OUT_CSV}  (rows={len(result)}, cols={len(result.columns)})")
+    print("Cột:", list(result.columns))
 
 if __name__ == "__main__":
     main()
