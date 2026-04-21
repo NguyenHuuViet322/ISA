@@ -1,41 +1,33 @@
 import csv
-from collections import defaultdict
 
-input_file = "batch_results6.csv"
-output_file = "output.csv"
+def load_best(fname, sep=','):
+    best = {}
+    with open(fname, newline='') as f:
+        reader = csv.DictReader(f, delimiter=sep)
+        for r in reader:
+            idx = r['Instance'].strip()
+            obj = float(r['Objective'])
+            best[idx] = min(best.get(idx, 1e18), obj)
+    return best
 
-# Lưu dữ liệu theo instance
-data = defaultdict(list)
+# ISA dùng tab, Tabu dùng comma — tự detect
+def load_auto(fname):
+    with open(fname) as f:
+        header = f.readline()
+    sep = '\t' if '\t' in header else ','
+    return load_best(fname, sep)
 
-# Đọc CSV
-with open(input_file, newline='') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        instance = int(row["Instance"])
-        run = int(row["Run"])
-        obj = float(row["Objective"])
-        runtime = float(row["Runtime"])
-        data[instance].append((run, obj, runtime))
+isa   = load_auto("batch_results_ISA.csv")
+tabu  = load_auto("tabu_results.csv")
 
-# Ghi CSV output
-with open(output_file, "w", newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(["Instance", "Run", "Objective", "Runtime"])
+common = set(isa) & set(tabu)
 
-    for instance in sorted(data.keys()):
-        runs = data[instance]
+losers = [(idx, isa[idx], tabu[idx], tabu[idx] - isa[idx])
+          for idx in common if tabu[idx] > isa[idx]]
+losers.sort(key=lambda x: -x[3])
 
-        # Sắp xếp theo objective tăng dần
-        runs_sorted = sorted(runs, key=lambda x: x[1])
-
-        # Lấy 8 cái tốt nhất
-        best8 = runs_sorted[:8]
-
-        # Tính trung bình
-        avg_obj = sum(x[1] for x in best8) / len(best8)
-        avg_runtime = sum(x[2] for x in best8) / len(best8)
-
-        # Xuất ra 1 dòng / instance
-        writer.writerow([instance, 1, round(avg_obj, 4), round(avg_runtime, 6)])
-
-print("Done!")
+print(f"Tabu thua ISA: {len(losers)}/{len(common)} instances\n")
+print(f"{'Instance':<12} {'ISA':>10} {'Tabu':>10} {'Delta':>10}")
+print("-" * 45)
+for idx, isa_v, tabu_v, delta in losers[:30]:
+    print(f"T_{idx:<10} {isa_v:>10.0f} {tabu_v:>10.0f} {delta:>+10.0f}")

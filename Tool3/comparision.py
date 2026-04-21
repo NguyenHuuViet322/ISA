@@ -1,125 +1,128 @@
 """
 compare.py
 ----------
-Gop ISA summary + Tabu summary roi so sanh.
+So sanh ISA vs HybridTabu.
 
-Workflow:
-  1. python summarize.py       -> summary_obj_by_test.csv
-  2. python process_tabu.py    -> tabu_summary.csv
-  3. python compare.py         -> comparison.csv + tom tat ra terminal
+File 1 (ISA):        Instance, Run, Objective, Runtime, Iterations  (tab-separated)
+File 2 (HybridTabu): Instance, Run, Objective, Runtime, Iterations  (comma-separated)
+
+Dau ra:
+  - comparison.csv : wide format, 1 dong / instance
+  - in tom tat ra terminal
 """
 
 from pathlib import Path
 import pandas as pd
 
-ISA_CSV  = Path("summary_obj_by_test.csv")
-TABU_CSV = Path("tabu_summary.csv")
-OUT_CSV  = Path("comparison.csv")
+# ── Duong dan file ────────────────────────────────────────────────────────────
+ISA_CSV   = Path("batch_results_ISA.csv")
+TABU_CSV  = Path("tabu_results.csv")
+OUT       = Path("comparison_new.csv")
 
-ALGO_A = "ISA"
-ALGO_B = "Tabu+O3"
+ALGO_ISA  = "ISA"
+ALGO_TABU = "HybridTabu"
 
-# -- Doc ISA: gop TAT CA cac algo (I_1_10, I_11_20...) thanh 1 bang ----------
-isa_all = pd.read_csv(ISA_CSV)
+# ── Doc file (tu dong detect separator) ──────────────────────────────────────
+def read_auto(path: Path) -> pd.DataFrame:
+    with open(path) as f:
+        header = f.readline()
+    sep = "\t" if "\t" in header else ","
+    df = pd.read_csv(path, sep=sep)
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
-isa = (
-    isa_all[["test_id", "mach", "job", "lower_cost", "upper_cost",
-              "obj_best", "obj_mean", "runtime_mean"]]
-    .dropna(subset=["obj_best"])
-    .drop_duplicates("test_id")
-    .copy()
-)
-isa["algo"] = ALGO_A
+isa_raw  = read_auto(ISA_CSV)
+tabu_raw = read_auto(TABU_CSV)
 
-# -- Doc Tabu -----------------------------------------------------------------
-tabu = pd.read_csv(TABU_CSV)
-tabu["algo"] = ALGO_B
+# ── Aggregate: best / mean / std theo Instance ────────────────────────────────
+def aggregate(df, label):
+    def agg(g):
+        obj = g["Objective"]
+        rt  = g["Runtime"]
+        it  = g["Iterations"]
+        return pd.Series({
+            "obj_best":    obj.min(),
+            "obj_avg":     obj.mean(),
+            "obj_std":     obj.std(ddof=0),
+            "runtime_avg": rt.mean(),
+            "iter_avg":    it.mean(),
+            "n_runs":      len(obj),
+        })
+    result = (
+        df.groupby("Instance", as_index=False)
+          .apply(agg)
+          .reset_index(drop=True)
+    )
+    result.columns = ["Instance"] + [f"{label}_{c}" for c in result.columns if c != "Instance"]
+    return result
 
-# -- Pivot sang wide de so sanh ngang -----------------------------------------
-combined = pd.concat([isa, tabu], ignore_index=True)
-combined["test_num"] = combined["test_id"].str.replace("T_", "", regex=False).astype(int)
+isa  = aggregate(isa_raw,  ALGO_ISA)
+tabu = aggregate(tabu_raw, ALGO_TABU)
 
-shared = (
-    combined[["test_id", "test_num", "mach", "job", "lower_cost", "upper_cost"]]
-    .dropna(subset=["mach"])
-    .drop_duplicates("test_id")
-    .set_index("test_id")
-)
+# ── Merge ─────────────────────────────────────────────────────────────────────
+wide = pd.merge(isa, tabu, on="Instance", how="inner")
+wide["Instance"] = wide["Instance"].astype(str)
 
-wide = combined.pivot(index="test_id", columns="algo",
-                      values=["obj_best", "obj_mean", "runtime_mean"])
-wide.columns = [f"{algo}_{stat}" for stat, algo in wide.columns]
-wide = shared.join(wide).reset_index()
-
-# -- Cot delta & verdict ------------------------------------------------------
-wide["delta_obj_best"] = wide[f"{ALGO_B}_obj_best"] - wide[f"{ALGO_A}_obj_best"]
-wide["delta_obj_mean"] = wide[f"{ALGO_B}_obj_mean"] - wide[f"{ALGO_A}_obj_mean"]
-wide["delta_runtime"]  = wide[f"{ALGO_B}_runtime_mean"] - wide[f"{ALGO_A}_runtime_mean"]
+# ── Delta (Tabu - ISA), negative = Tabu tot hon ───────────────────────────────
+wide["delta_best"] = wide[f"{ALGO_TABU}_obj_best"] - wide[f"{ALGO_ISA}_obj_best"]
+wide["delta_avg"]  = wide[f"{ALGO_TABU}_obj_avg"]  - wide[f"{ALGO_ISA}_obj_avg"]
+wide["delta_best_pct"] = wide["delta_best"] / wide[f"{ALGO_ISA}_obj_best"] * 100
+wide["delta_avg_pct"]  = wide["delta_avg"]  / wide[f"{ALGO_ISA}_obj_avg"]  * 100
 
 def verdict(d):
-    if pd.isna(d):  return "N/A"
-    if d < 0:       return f"{ALGO_B} better"
-    if d == 0:      return "Tie"
-    return                  f"{ALGO_A} better"
+    if pd.isna(d): return "N/A"
+    if d < 0:      return "Tabu better"
+    if d == 0:     return "Tie"
+    return                "ISA better"
 
-wide["verdict_best"] = wide["delta_obj_best"].map(verdict)
-wide["verdict_mean"] = wide["delta_obj_mean"].map(verdict)
+wide["verdict_best"] = wide["delta_best"].map(verdict)
+wide["verdict_avg"]  = wide["delta_avg"].map(verdict)
 
-# -- Sap xep cot --------------------------------------------------------------
-col_order = (
-    ["test_id", "mach", "job", "lower_cost", "upper_cost"]
-    + [f"{ALGO_A}_obj_best", f"{ALGO_B}_obj_best", "delta_obj_best", "verdict_best"]
-    + [f"{ALGO_A}_obj_mean", f"{ALGO_B}_obj_mean", "delta_obj_mean", "verdict_mean"]
-    + [f"{ALGO_A}_runtime_mean", f"{ALGO_B}_runtime_mean", "delta_runtime"]
-)
+# ── Sap xep cot ───────────────────────────────────────────────────────────────
+col_order = [
+    "Instance",
+    f"{ALGO_ISA}_obj_best",  f"{ALGO_TABU}_obj_best",
+    "delta_best", "delta_best_pct", "verdict_best",
+    f"{ALGO_ISA}_obj_avg",   f"{ALGO_TABU}_obj_avg",
+    "delta_avg",  "delta_avg_pct",  "verdict_avg",
+    f"{ALGO_ISA}_obj_std",   f"{ALGO_TABU}_obj_std",
+    f"{ALGO_ISA}_iter_avg",  f"{ALGO_TABU}_iter_avg",
+    f"{ALGO_ISA}_runtime_avg", f"{ALGO_TABU}_runtime_avg",
+    f"{ALGO_ISA}_n_runs",    f"{ALGO_TABU}_n_runs",
+]
 wide = wide[[c for c in col_order if c in wide.columns]]
-wide["_t"] = wide["test_id"].str.replace("T_", "", regex=False).astype(int)
-wide = wide.sort_values("_t").drop(columns=["_t"]).reset_index(drop=True)
+wide = wide.sort_values("Instance").reset_index(drop=True)
+wide.to_csv(OUT, index=False, encoding="utf-8-sig")
+print(f"Da xuat: {OUT}  (rows={len(wide)})")
 
-# -- Tom tat ra terminal ------------------------------------------------------
-both  = wide.dropna(subset=[f"{ALGO_A}_obj_best", f"{ALGO_B}_obj_best"])
-total = len(both)
-
-def improv_pct(df, col_winner, col_loser):
-    if len(df) == 0:
-        return float("nan")
-    return ((df[col_loser] - df[col_winner]) / df[col_loser] * 100).mean()
-
-def print_section(metric, col_a, col_b, delta_col, verdict_col):
-    counts = both[verdict_col].value_counts()
-    tb = both[both[verdict_col] == f"{ALGO_B} better"]
-    ib = both[both[verdict_col] == f"{ALGO_A} better"]
-    tb_pct = improv_pct(tb, col_b, col_a)
-    ib_pct = improv_pct(ib, col_a, col_b)
-
-    print("")
-    print(f"  [ {metric} ]")
-    for label in [f"{ALGO_B} better", "Tie", f"{ALGO_A} better"]:
-        n   = counts.get(label, 0)
-        pct = n / total * 100 if total else 0
-        print(f"    {label:<22}: {n:>4}  ({pct:5.1f}%)")
-    print(f"    Khi {ALGO_B} thang -> tot hon avg : {tb_pct:.2f}%")
-    print(f"    Khi {ALGO_A} thang -> tot hon avg : {ib_pct:.2f}%")
-    print(f"    Delta avg overall  : {both[delta_col].mean():+.2f}")
-
+# ── Tom tat terminal ──────────────────────────────────────────────────────────
 SEP = "=" * 60
+
+def section(label, verdict_col, delta_pct_col):
+    total  = len(wide)
+    counts = wide[verdict_col].value_counts()
+    print(f"\n  [ {label} ]")
+    for v in ["Tabu better", "Tie", "ISA better"]:
+        n   = counts.get(v, 0)
+        pct = n / total * 100
+        sub = wide[wide[verdict_col] == v]
+        avg_d = sub[delta_pct_col].abs().mean() if len(sub) else float("nan")
+        print(f"    {v:<14}: {n:>5}  ({pct:5.1f}%)  avg |delta| = {avg_d:.3f}%")
+    overall = wide[delta_pct_col].mean()
+    print(f"    Overall delta %       : {overall:+.4f}%")
+
 print(SEP)
-print(f"  {ALGO_A}  vs  {ALGO_B}  --  {total} tests co du 2 algo")
-print(f"  (tong {len(wide)} tests, {len(wide) - total} chi co 1 algo)")
+print(f"  ISA  vs  HybridTabu")
+print(f"  Instances: {len(wide)}")
 print(SEP)
 
-print_section("obj_best",
-              f"{ALGO_A}_obj_best", f"{ALGO_B}_obj_best",
-              "delta_obj_best", "verdict_best")
+section("obj_best", "verdict_best", "delta_best_pct")
+section("obj_avg",  "verdict_avg",  "delta_avg_pct")
 
-print_section("obj_avg (mean)",
-              f"{ALGO_A}_obj_mean", f"{ALGO_B}_obj_mean",
-              "delta_obj_mean", "verdict_mean")
+print(f"\n  [ Runtime & Iterations (avg) ]")
+print(f"    ISA       iter: {wide[f'{ALGO_ISA}_iter_avg'].mean():>10.0f}  "
+      f"  time: {wide[f'{ALGO_ISA}_runtime_avg'].mean():.3f}s")
+print(f"    HybridTabu iter: {wide[f'{ALGO_TABU}_iter_avg'].mean():>10.0f}  "
+      f"  time: {wide[f'{ALGO_TABU}_runtime_avg'].mean():.3f}s")
 
-print("")
-print(f"  Delta runtime avg : {both['delta_runtime'].mean():+.4f}s")
 print(SEP)
-
-# -- Xuat CSV -----------------------------------------------------------------
-wide.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-print(f"\nDa xuat: {OUT_CSV}  (rows={len(wide)}, cols={len(wide.columns)})")

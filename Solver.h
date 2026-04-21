@@ -91,7 +91,7 @@ public:
     {
         // runSingle("data/T_2160.txt", 20, 4);
         // runAllInstances(10);
-        runBigData(10);
+        //runBigData(10);
     }
 
     // ─────────────────────────────────────────────
@@ -329,13 +329,13 @@ public:
     // ─────────────────────────────────────────────
     void runAllInstances(int numRuns)
     {
-        std::ofstream outFile("batch_results6.csv");
+        std::ofstream outFile("batch_results_ISA.csv");
         if (!outFile.is_open())
         {
             std::cerr << "Cannot open output file!\n";
             return;
         }
-        outFile << "Instance,Run,Objective,Runtime,Iterations\n";
+        outFile << "Instance,Run,Objective,Runtime,Iterations,Machs,Jobs\n";
         outFile.flush();
 
         for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
@@ -345,8 +345,8 @@ public:
             if (!instance.readFromFile(ss.str())) continue;
 
             int n = instance.job, m = instance.mach;
-            time_limit = (n <= 20 && m <= 4) ? 1.0 :
-                         (n <= 50 && m <= 6) ? 2.0 : 4.0;
+            time_limit = (fileIdx <= 720) ? 0.2 :
+                         (fileIdx <= 1440) ? 1.0 : 5.0;
 
             upper_bound = (int)calculateUpper();
             lower_bound = (int)calculateLower();
@@ -368,7 +368,8 @@ public:
                 double obj = computeTCT_fromCache();
 
                 outFile << fileIdx << ',' << run << ',' << obj << ','
-                        << elapsed.count() << ',' << iterCount << '\n';
+                        << elapsed.count() << ',' << iterCount << ','
+                        << instance.mach << ',' << instance.job << '\n';
                 outFile.flush();
 
                 std::cout << "[" << fileIdx << "/2160] Run " << run

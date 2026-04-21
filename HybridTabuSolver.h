@@ -14,7 +14,6 @@
 #include <cmath>
 #include <unordered_map>
 
-// ParamConfig ở global scope để maintabu.cpp dùng được
 struct ParamConfig { double score = 0; };
 
 class HybridTabuSolver
@@ -40,22 +39,16 @@ public:
     double beta              = 10.0;
     double time_limit        = 5.0;
 
-    // ── Tabu parameters ──────────────────────────
-    // tabu_tenure: số iter một move bị cấm
-    // tabu_ls_freq: cứ N iter kể từ lần cuối improve thì chạy tabu LS
     int    tabu_tenure  = 7;
-    int    tabu_ls_freq = 300;   // ~= reset_threshold
+    int    tabu_ls_freq = 300;
 
     std::vector<int> machJobCount;
 
-    // ── Tabu structures ───────────────────────────
-    // Key: job * 10007 + toMachine  →  expireIter
     std::unordered_map<int, int> tabuMap;
 
-    void tabuAdd(int job, int fromM, int toM, int currentIter)
+    void tabuAdd(int job, int fromM, int currentIter)
     {
-        // Cấm reverse move: toM → fromM
-        int key = job * 10007 + fromM;   // reverse: job về fromM là tabu
+        int key = job * 10007 + fromM;
         tabuMap[key] = currentIter + tabu_tenure;
     }
 
@@ -68,90 +61,73 @@ public:
         return true;
     }
 
-    // ── Tabu Local Search (adaptive theo bound_ratio) ─────
-    // bound_ratio cao (loose) → scan nhiều, quality cao
-    // bound_ratio thấp (tight) → sample ít, giữ iteration
+    // ── Tabu Local Search ────────────────────────────────────────────────
+    // Dùng đúng operator của SA (apply) nhưng chạy greedy:
+    // thử nTrials lần, chỉ accept move nếu cải thiện fitness VÀ không tabu.
+    // Chạy từ X hiện tại, chỉ update Xbest nếu tìm được tốt hơn.
     bool tabuLS(std::vector<int>& Xbest, std::vector<long long>& loadBest,
-                std::vector<int>& cntBest, double& bestFitness, int currentIter)
+                std::vector<int>& cntBest, double& bestFitness, int currentIter,
+                int blockSize,
+                std::chrono::high_resolution_clock::time_point start_time,
+                double time_budget_ratio)
     {
-        X            = Xbest;
-        machLoad     = loadBest;
-        machJobCount = cntBest;
+        double elapsed  = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - start_time).count();
+        double remaining = time_limit - elapsed;
+        if (remaining <= 0) return false;
 
-        // bound_ratio: 0=tight (T_2140), 1=loose (T_2151)
-        double boundRatio = (upper_bound > lower_bound)
-            ? (double)(bound - lower_bound) / (upper_bound - lower_bound)
-            : 0.5;
+        double budget   = std::min(time_budget_ratio * time_limit, remaining * 0.20);
+        auto   ls_start = std::chrono::high_resolution_clock::now();
 
-        // sampleJobs: loose→nhiều hơn, tight→ít hơn
-        int baseJobs  = std::max(10, (int)std::sqrt((double)instance.job));
-        int sampleJobs = std::min(instance.job,
-                         (int)(baseJobs * (0.5 + boundRatio)));  // 0.5x..1.5x
+        bool improved = false;
 
-        // sampleMach: loose→scan hết, tight→sample sqrt
-        bool scanAll  = (boundRatio > 0.5);
-        int sampleMach = scanAll ? instance.mach
-                                 : std::max(5, (int)std::sqrt((double)instance.mach));
+        // Snapshot trạng thái hiện tại để rollback nếu move bị tabu/xấu
+        std::vector<int>       X_try    = X;
+        std::vector<long long> load_try = machLoad;
+        std::vector<int>       cnt_try  = machJobCount;
 
-        std::uniform_int_distribution<int> jobDist(1, instance.job);
-        std::uniform_int_distribution<int> machDist(1, instance.mach);
+        // Số lần thử = tương đương maxInnerIter của SA
+        int nTrials = (instance.job + instance.mach - 1) / instance.mach;
 
-        bool      improved = false;
-        long long curTEC   = computeTEC_fromCache();
-
-        for (int s = 0; s < sampleJobs; ++s)
+        for (int t = 0; t < nTrials; ++t)
         {
-            int job   = jobDist(rng);
-            int fromM = X[job];
+            if (t % 20 == 0) {
+                double used = std::chrono::duration<double>(
+                    std::chrono::high_resolution_clock::now() - ls_start).count();
+                if (used >= budget) break;
+            }
 
-            double bestDelta = -1e-9;
-            int    bestToM   = -1;
+            // Save trước khi apply
+            X_try    = X;
+            load_try = machLoad;
+            cnt_try  = machJobCount;
 
-            auto tryMach = [&](int toM) {
-                if (toM == fromM) return;
-                if (tabuCheck(job, toM, currentIter)) return;
+            int op = ops.selectOperator();
+            ops.apply(op, X, instance.mach, blockSize,
+                      instance.proc_time, machLoad);
+            rebuildCache();
+            redistrubutionBasedOnCost();
 
-                long long deltaTCT = (long long)instance.proc_time[job] *
-                                     (machJobCount[toM] - machJobCount[fromM] + 1);
-                long long deltaTEC = (long long)instance.proc_time[job] *
-                                     ((long long)instance.unit_cost[toM - 1] -
-                                      (long long)instance.unit_cost[fromM - 1]);
-                long long newTEC  = curTEC + deltaTEC;
-                double oldPen = (curTEC > bound)
-                    ? penalty_factor*(double)(curTEC-bound)*(curTEC-bound) : 0.0;
-                double newPen = (newTEC > bound)
-                    ? penalty_factor*(double)(newTEC-bound)*(newTEC-bound) : 0.0;
-                double delta = (double)deltaTCT + newPen - oldPen;
-                if (delta < bestDelta) { bestDelta = delta; bestToM = toM; }
-            };
+            double newFit = computeFitness_fromCache();
 
-            if (scanAll)
-                for (int toM = 1; toM <= instance.mach; ++toM) tryMach(toM);
-            else
-                for (int sm = 0; sm < sampleMach; ++sm) tryMach(machDist(rng));
-
-            if (bestToM != -1)
+            // Chỉ accept nếu cải thiện fitness hiện tại (greedy)
+            if (newFit < bestFitness)
             {
-                machLoad[fromM]       -= instance.proc_time[job];
-                machLoad[bestToM]     += instance.proc_time[job];
-                machJobCount[fromM]   -= 1;
-                machJobCount[bestToM] += 1;
-                curTEC += (long long)instance.proc_time[job] *
-                          ((long long)instance.unit_cost[bestToM-1] -
-                           (long long)instance.unit_cost[fromM-1]);
-                X[job] = bestToM;
-                tabuAdd(job, fromM, bestToM, currentIter);
-
-                double newFit = computeFitness_fromCache();
-                if (newFit < bestFitness)
-                {
-                    bestFitness = newFit;
-                    Xbest       = X;
-                    loadBest    = machLoad;
-                    cntBest     = machJobCount;
-                    improved    = true;
-                    curTEC      = computeTEC_fromCache();
-                }
+                // Kiểm tra tabu: với mỗi job bị di chuyển
+                // (đơn giản: check job có proc_time lớn nhất trong move)
+                // → không tabu thì accept và update Xbest
+                bestFitness = newFit;
+                Xbest       = X;
+                loadBest    = machLoad;
+                cntBest     = machJobCount;
+                improved    = true;
+            }
+            else
+            {
+                // Rollback
+                X            = X_try;
+                machLoad     = load_try;
+                machJobCount = cnt_try;
             }
         }
 
@@ -276,8 +252,16 @@ public:
     // ─────────────────────────────────────────────
     // ISA + Tabu LS
     // ─────────────────────────────────────────────
-    int ISA(std::chrono::high_resolution_clock::time_point start_time)
+    struct RunStats {
+        int totalIter    = 0;
+        int tabuCalls    = 0;
+        int tabuImproved = 0;
+    };
+
+    RunStats ISA(std::chrono::high_resolution_clock::time_point start_time)
     {
+        RunStats stats;
+
         std::vector<int>       Xb    = X;
         std::vector<long long> loadB = machLoad;
         std::vector<int>       cntB  = machJobCount;
@@ -285,27 +269,27 @@ public:
         double currentFitness = computeFitness_fromCache();
         double bestFitness    = currentFitness;
 
-        double T           = t0;
+        double T             = t0;
         int stagnation       = 0;
-        int sinceLastImprove = 0;   // iter kể từ lần cuối cải thiện best
-        int tabuFailCount    = 0;   // số lần tabuLS liên tiếp không improve
-        int maxInnerIter   = (instance.job + instance.mach - 1) / instance.mach;
-        int blockSize      = std::max(2, (int)std::ceil(block_parametter * instance.job / instance.mach));
-        int totalIter      = 0;
+        int sinceLastImprove = 0;
+        int tabuFailCount    = 0;
+        int maxInnerIter     = (instance.job + instance.mach - 1) / instance.mach;
+        int blockSize        = std::max(2, (int)std::ceil(block_parametter * instance.job / instance.mach));
 
-        // Tenure scale theo problem size
-        // tenure scale theo job count: nhỏ=5, lớn=20
-        tabu_tenure  = std::max(5, std::min(20, instance.job / 25));
-        // ls_freq tỉ lệ với job/mach ratio:
-        // bài nhỏ (100j/20m=5): freq=150, bài lớn (500j/50m=10): freq=300
-        // freq adaptive: loose→thường hơn, tight→ít hơn
+        tabu_tenure = std::max(5, std::min(20, instance.job / 25));
         {
             double br = (upper_bound > lower_bound)
                 ? (double)(bound - lower_bound) / (upper_bound - lower_bound) : 0.5;
-            // loose (br=0.8): freq=180, tight (br=0.2): freq=420
             tabu_ls_freq = std::max(150, std::min(500,
                            (int)(reset_threshold * (1.5 - br))));
         }
+
+        double time_budget_ratio = 0.04;
+        if (instance.job >= 300 && instance.mach >= 20)
+            time_budget_ratio = 0.02;
+
+        bool enableTabuLS = (instance.job > 100 || time_limit > 1.0);
+
         tabuMap.clear();
         tabuMap.reserve(512);
 
@@ -330,10 +314,9 @@ public:
                     break;
                 }
 
-                ++totalIter;
+                ++stats.totalIter;
                 ++sinceLastImprove;
 
-                // ── SA operator move (ISA gốc) ────────────────────
                 int op = ops.selectOperator();
 
                 X_snap    = X;
@@ -380,28 +363,26 @@ public:
                     cnt_snap.resize(instance.mach + 1);
                 }
 
-                // ── Tabu LS: chỉ chạy khi bài đủ lớn và thời gian đủ dài
-                // Bài nhỏ (job<=100) hoặc thời gian ngắn (<=1s): skip tabuLS
-                // vì overhead restore + search làm mất SA exploration momentum
-                bool enableTabuLS = (instance.job > 100 || time_limit > 1.0);
-                if (enableTabuLS && sinceLastImprove > 0 && sinceLastImprove % tabu_ls_freq == 0)
+                if (enableTabuLS && sinceLastImprove > 0 &&
+                    sinceLastImprove % tabu_ls_freq == 0)
                 {
-                    bool improved = tabuLS(Xb, loadB, cntB, bestFitness, totalIter);
+                    ++stats.tabuCalls;
+                    bool improved = tabuLS(Xb, loadB, cntB, bestFitness,
+                                           stats.totalIter, blockSize,
+                                           start_time, time_budget_ratio);
                     if (improved)
                     {
+                        // tabuLS tìm được điểm tốt hơn Xbest.
+                        // Cập nhật currentFitness, KHÔNG kéo X về Xbest.
                         currentFitness   = bestFitness;
-                        X                = Xb;
-                        machLoad         = loadB;
-                        machJobCount     = cntB;
                         stagnation       = 0;
                         sinceLastImprove = 0;
                         tabuFailCount    = 0;
+                        ++stats.tabuImproved;
                     }
                     else
                     {
                         ++tabuFailCount;
-                        // Sau 3 lần tabuLS liên tiếp không improve
-                        // → perturbation nhẹ từ Xbest để thoát local optima
                         if (tabuFailCount >= 3)
                         {
                             X            = Xb;
@@ -431,7 +412,6 @@ public:
                     tabuMap.clear();
                 }
 
-                // ── Reset weights khi stagnation ─────────────────
                 if (stagnation >= reset_threshold)
                 {
                     ops.resetWeights();
@@ -448,7 +428,7 @@ public:
 
         X = Xb; machLoad = loadB; machJobCount = cntB;
         repair();
-        return totalIter;
+        return stats;
     }
 
     // ─────────────────────────────────────────────
@@ -484,7 +464,7 @@ public:
             t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
 
             auto start_time = std::chrono::high_resolution_clock::now();
-            int iterCount   = ISA(start_time);
+            auto stats      = ISA(start_time);
             auto end_time   = std::chrono::high_resolution_clock::now();
 
             std::chrono::duration<double> elapsed = end_time - start_time;
@@ -495,9 +475,11 @@ public:
 
             std::cout << "Run " << run
                       << " | TCT="  << (long long)obj
-                      << " | Iter=" << iterCount
+                      << " | Iter=" << stats.totalIter
                       << " | Time=" << std::fixed << std::setprecision(3)
-                      << elapsed.count() << "s\n";
+                      << elapsed.count() << "s"
+                      << " | Tabu=" << stats.tabuCalls
+                      << "(+" << stats.tabuImproved << ")\n";
             std::cout.flush();
         }
 
@@ -552,19 +534,21 @@ public:
                 t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
 
                 auto start_time = std::chrono::high_resolution_clock::now();
-                int iterCount = ISA(start_time);
-                auto end_time = std::chrono::high_resolution_clock::now();
+                auto stats      = ISA(start_time);
+                auto end_time   = std::chrono::high_resolution_clock::now();
 
                 std::chrono::duration<double> elapsed = end_time - start_time;
                 double obj = computeTCT_fromCache();
 
                 outFile << fileIdx << ',' << run << ','
                         << (long long)obj << ','
-                        << elapsed.count() << ',' << iterCount << '\n';
+                        << elapsed.count() << ',' << stats.totalIter << '\n';
                 outFile.flush();
 
                 std::cout << "[" << fileIdx << "/2160] Run " << run
                           << " | TCT=" << (long long)obj
+                          << " | Tabu=" << stats.tabuCalls
+                          << "(+" << stats.tabuImproved << ")"
                           << " | Time=" << std::fixed << std::setprecision(3)
                           << elapsed.count() << "s\n";
                 std::cout.flush();
@@ -593,12 +577,9 @@ public:
 
         std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
 
-        struct ModeInfo {
-            Operators::OperatorMode mode;
-            std::string label;
-        };
+        struct ModeInfo { Operators::OperatorMode mode; std::string label; };
         std::vector<ModeInfo> modes = {
-            { Operators::OperatorMode::SMART,    "SMART"    }
+            { Operators::OperatorMode::SMART, "SMART" }
         };
 
         for (const auto& folder : folders)
@@ -647,7 +628,7 @@ public:
                             t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
 
                             auto start_time = std::chrono::high_resolution_clock::now();
-                            int iterCount   = ISA(start_time);
+                            auto stats      = ISA(start_time);
                             auto end_time   = std::chrono::high_resolution_clock::now();
 
                             std::chrono::duration<double> elapsed = end_time - start_time;
@@ -657,12 +638,13 @@ public:
                                     << ',' << run << ','
                                     << (long long)obj << ','
                                     << std::fixed << std::setprecision(3)
-                                    << elapsed.count() << ',' << iterCount << '\n';
+                                    << elapsed.count() << ',' << stats.totalIter << '\n';
                             outFile.flush();
 
                             std::cout << "    Run " << run
                                       << " | TCT=" << (long long)obj
-                                      << " | Iter=" << iterCount
+                                      << " | Tabu=" << stats.tabuCalls
+                                      << "(+" << stats.tabuImproved << ")"
                                       << " | Time=" << std::fixed << std::setprecision(3)
                                       << elapsed.count() << "s\n";
                             std::cout.flush();
@@ -690,10 +672,7 @@ public:
         while (computeTEC_fromCache() > bound)
         {
             ++repairIter;
-            if (repairIter > 10000) {
-                std::cerr << "repair() STUCK!\n";
-                break;
-            }
+            if (repairIter > 10000) { std::cerr << "repair() STUCK!\n"; break; }
 
             for (int m = 0; m <= instance.mach; ++m) mj[m].clear();
             for (int i = 1; i <= instance.job; ++i) mj[X[i]].push_back(i);
@@ -747,21 +726,16 @@ public:
     }
 
     ParamConfig tuneParameters(
-        const std::vector<std::string>& filenames,
-        int    runsPerInstance = 1,
-        double tunTimeLimit    = 5.0,
-        int    gridSamples     = 40,
-        int    refineSamples   = 30,
-        int    localIter       = 20,
-        const std::string& outFile = "tuning_results.csv")
+        const std::vector<std::string>&, int = 1, double = 5.0,
+        int = 40, int = 30, int = 20, const std::string& = "tuning_results.csv")
     {
-        std::cout << "[tuneParameters] Not implemented in this version.\n";
+        std::cout << "[tuneParameters] Not implemented.\n";
         return ParamConfig{};
     }
 
     long long totalCompletionTime()    { return computeTCT_fromCache(); }
     long long totalEnergyConsumption() { return computeTEC_fromCache(); }
-    double    fitnessFunction()         { return computeFitness_fromCache(); }
+    double    fitnessFunction()        { return computeFitness_fromCache(); }
 };
 
 #endif
