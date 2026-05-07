@@ -12,11 +12,10 @@
 #include <fstream>
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
 
 struct ParamConfig { double score = 0; };
 
-class HybridTabuSolver
+class ISA_GLS_Solver
 {
 public:
     std::mt19937 rng{std::random_device{}()};
@@ -39,39 +38,21 @@ public:
     double beta              = 10.0;
     double time_limit        = 5.0;
 
-    int    tabu_tenure  = 7;
-    int    tabu_ls_freq = 300;
+    int    gls_freq = 300;   // how often (in SA iters without improvement) to trigger greedy LS
 
     std::vector<int> machJobCount;
 
-    std::unordered_map<int, int> tabuMap;
-
-    void tabuAdd(int job, int fromM, int currentIter)
+    // ── Greedy Local Search ───────────────────────────────────────────────
+    // Runs up to nTrials moves using the same operators as SA.
+    // Accepts a move only if it strictly improves bestFitness (greedy).
+    // Updates Xbest in-place when an improvement is found.
+    bool greedyLS(std::vector<int>& Xbest, std::vector<long long>& loadBest,
+                  std::vector<int>& cntBest, double& bestFitness,
+                  int blockSize,
+                  std::chrono::high_resolution_clock::time_point start_time,
+                  double time_budget_ratio)
     {
-        int key = job * 10007 + fromM;
-        tabuMap[key] = currentIter + tabu_tenure;
-    }
-
-    bool tabuCheck(int job, int toM, int currentIter)
-    {
-        int key = job * 10007 + toM;
-        auto it = tabuMap.find(key);
-        if (it == tabuMap.end()) return false;
-        if (it->second <= currentIter) { tabuMap.erase(it); return false; }
-        return true;
-    }
-
-    // ── Tabu Local Search ────────────────────────────────────────────────
-    // Dùng đúng operator của SA (apply) nhưng chạy greedy:
-    // thử nTrials lần, chỉ accept move nếu cải thiện fitness VÀ không tabu.
-    // Chạy từ X hiện tại, chỉ update Xbest nếu tìm được tốt hơn.
-    bool tabuLS(std::vector<int>& Xbest, std::vector<long long>& loadBest,
-                std::vector<int>& cntBest, double& bestFitness, int currentIter,
-                int blockSize,
-                std::chrono::high_resolution_clock::time_point start_time,
-                double time_budget_ratio)
-    {
-        double elapsed  = std::chrono::duration<double>(
+        double elapsed   = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - start_time).count();
         double remaining = time_limit - elapsed;
         if (remaining <= 0) return false;
@@ -81,12 +62,10 @@ public:
 
         bool improved = false;
 
-        // Snapshot trạng thái hiện tại để rollback nếu move bị tabu/xấu
         std::vector<int>       X_try    = X;
         std::vector<long long> load_try = machLoad;
         std::vector<int>       cnt_try  = machJobCount;
 
-        // Số lần thử = tương đương maxInnerIter của SA
         int nTrials = (instance.job + instance.mach - 1) / instance.mach;
 
         for (int t = 0; t < nTrials; ++t)
@@ -97,7 +76,6 @@ public:
                 if (used >= budget) break;
             }
 
-            // Save trước khi apply
             X_try    = X;
             load_try = machLoad;
             cnt_try  = machJobCount;
@@ -110,12 +88,8 @@ public:
 
             double newFit = computeFitness_fromCache();
 
-            // Chỉ accept nếu cải thiện fitness hiện tại (greedy)
             if (newFit < bestFitness)
             {
-                // Kiểm tra tabu: với mỗi job bị di chuyển
-                // (đơn giản: check job có proc_time lớn nhất trong move)
-                // → không tabu thì accept và update Xbest
                 bestFitness = newFit;
                 Xbest       = X;
                 loadBest    = machLoad;
@@ -124,7 +98,6 @@ public:
             }
             else
             {
-                // Rollback
                 X            = X_try;
                 machLoad     = load_try;
                 machJobCount = cnt_try;
@@ -183,7 +156,7 @@ public:
     // ─────────────────────────────────────────────
     // Constructor
     // ─────────────────────────────────────────────
-    HybridTabuSolver()
+    ISA_GLS_Solver()
     {
         // runSingle("data/T_2160.txt", 20, 4);
         // runAllInstances(10);
@@ -250,12 +223,12 @@ public:
     }
 
     // ─────────────────────────────────────────────
-    // ISA + Tabu LS
+    // ISA-GLS core
     // ─────────────────────────────────────────────
     struct RunStats {
-        int totalIter    = 0;
-        int tabuCalls    = 0;
-        int tabuImproved = 0;
+        int totalIter      = 0;
+        int glsCalls       = 0;
+        int glsImproved    = 0;
     };
 
     RunStats ISA(std::chrono::high_resolution_clock::time_point start_time)
@@ -272,26 +245,22 @@ public:
         double T             = t0;
         int stagnation       = 0;
         int sinceLastImprove = 0;
-        int tabuFailCount    = 0;
+        int glsFailCount     = 0;
         int maxInnerIter     = (instance.job + instance.mach - 1) / instance.mach;
         int blockSize        = std::max(2, (int)std::ceil(block_parametter * instance.job / instance.mach));
 
-        tabu_tenure = std::max(5, std::min(20, instance.job / 25));
         {
             double br = (upper_bound > lower_bound)
                 ? (double)(bound - lower_bound) / (upper_bound - lower_bound) : 0.5;
-            tabu_ls_freq = std::max(150, std::min(500,
-                           (int)(reset_threshold * (1.5 - br))));
+            gls_freq = std::max(150, std::min(500,
+                       (int)(reset_threshold * (1.5 - br))));
         }
 
         double time_budget_ratio = 0.04;
         if (instance.job >= 300 && instance.mach >= 20)
             time_budget_ratio = 0.02;
 
-        bool enableTabuLS = (instance.job > 100 || time_limit > 1.0);
-
-        tabuMap.clear();
-        tabuMap.reserve(512);
+        bool enableGLS = (instance.job > 100 || time_limit > 1.0);
 
         std::uniform_real_distribution<double> dist(0.0, 1.0);
 
@@ -363,28 +332,27 @@ public:
                     cnt_snap.resize(instance.mach + 1);
                 }
 
-                if (enableTabuLS && sinceLastImprove > 0 &&
-                    sinceLastImprove % tabu_ls_freq == 0)
+                // Periodic greedy LS triggered on stagnation
+                if (enableGLS && sinceLastImprove > 0 &&
+                    sinceLastImprove % gls_freq == 0)
                 {
-                    ++stats.tabuCalls;
-                    bool improved = tabuLS(Xb, loadB, cntB, bestFitness,
-                                           stats.totalIter, blockSize,
-                                           start_time, time_budget_ratio);
+                    ++stats.glsCalls;
+                    bool improved = greedyLS(Xb, loadB, cntB, bestFitness,
+                                             blockSize, start_time, time_budget_ratio);
                     if (improved)
                     {
-                        // tabuLS tìm được điểm tốt hơn Xbest.
-                        // Cập nhật currentFitness, KHÔNG kéo X về Xbest.
                         currentFitness   = bestFitness;
                         stagnation       = 0;
                         sinceLastImprove = 0;
-                        tabuFailCount    = 0;
-                        ++stats.tabuImproved;
+                        glsFailCount     = 0;
+                        ++stats.glsImproved;
                     }
                     else
                     {
-                        ++tabuFailCount;
-                        if (tabuFailCount >= 3)
+                        ++glsFailCount;
+                        if (glsFailCount >= 3)
                         {
+                            // Perturbation: escape local optimum by random reassignment
                             X            = Xb;
                             machLoad     = loadB;
                             machJobCount = cntB;
@@ -405,11 +373,10 @@ public:
                             rebuildCache();
                             redistrubutionBasedOnCost();
                             currentFitness = computeFitness_fromCache();
-                            tabuFailCount  = 0;
+                            glsFailCount   = 0;
                             ops.resetWeights();
                         }
                     }
-                    tabuMap.clear();
                 }
 
                 if (stagnation >= reset_threshold)
@@ -478,8 +445,8 @@ public:
                       << " | Iter=" << stats.totalIter
                       << " | Time=" << std::fixed << std::setprecision(3)
                       << elapsed.count() << "s"
-                      << " | Tabu=" << stats.tabuCalls
-                      << "(+" << stats.tabuImproved << ")\n";
+                      << " | GLS=" << stats.glsCalls
+                      << "(+" << stats.glsImproved << ")\n";
             std::cout.flush();
         }
 
@@ -547,8 +514,8 @@ public:
 
                 std::cout << "[" << fileIdx << "/2160] Run " << run
                           << " | TCT=" << (long long)obj
-                          << " | Tabu=" << stats.tabuCalls
-                          << "(+" << stats.tabuImproved << ")"
+                          << " | GLS=" << stats.glsCalls
+                          << "(+" << stats.glsImproved << ")"
                           << " | Time=" << std::fixed << std::setprecision(3)
                           << elapsed.count() << "s\n";
                 std::cout.flush();
@@ -643,8 +610,8 @@ public:
 
                             std::cout << "    Run " << run
                                       << " | TCT=" << (long long)obj
-                                      << " | Tabu=" << stats.tabuCalls
-                                      << "(+" << stats.tabuImproved << ")"
+                                      << " | GLS=" << stats.glsCalls
+                                      << "(+" << stats.glsImproved << ")"
                                       << " | Time=" << std::fixed << std::setprecision(3)
                                       << elapsed.count() << "s\n";
                             std::cout.flush();

@@ -33,7 +33,7 @@ int main(int argc, char* argv[])
     std::cout << "║     For Parallel Machine Scheduling with TCT + TEC        ║\n";
     std::cout << "╚═══════════════════════════════════════════════════════════╝\n\n";
 
-    HybridTabuSolver solver;
+    ISA_GLS_Solver solver;
 
     if (argc == 1)
     {

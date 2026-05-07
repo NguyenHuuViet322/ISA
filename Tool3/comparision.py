@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 # ── Duong dan file ────────────────────────────────────────────────────────────
-ISA_CSV   = Path("batch_results_ISA.csv")
+ISA_CSV   = Path("batch_results_ISA_3.csv")
 TABU_CSV  = Path("tabu_results.csv")
 OUT       = Path("comparison_new.csv")
 
