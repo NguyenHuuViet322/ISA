@@ -16,8 +16,8 @@ import pandas as pd
 
 # ── Duong dan file ────────────────────────────────────────────────────────────
 ISA_CSV   = Path("batch_results_ISA_3.csv")
-TABU_CSV  = Path("tabu_results.csv")
-OUT       = Path("comparison_new.csv")
+TABU_CSV  = Path("batch_results_gls_test.csv")
+OUT       = Path("comparison_new_27.csv")
 
 ALGO_ISA  = "ISA"
 ALGO_TABU = "HybridTabu"

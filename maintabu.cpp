@@ -6,22 +6,28 @@
 void printUsage(const char* programName)
 {
     std::cout << "Usage:\n";
-    std::cout << "  " << programName << "                                         # Run big data benchmark\n";
-    std::cout << "  " << programName << " --single <file> [runs] [time]           # Run single instance\n";
-    std::cout << "  " << programName << " --batch [runs]                          # Run all T_1..T_2160\n";
-    std::cout << "  " << programName << " --big [runs]                            # Run big data instances\n";
-    std::cout << "  " << programName << " --tune <f1> [f2 ...] [options]          # Tune parameters\n";
-    std::cout << "\nTune options (sau danh sách file):\n";
-    std::cout << "  --runs   <n>    Số runs/instance khi đánh giá   (default: 1)\n";
-    std::cout << "  --time   <sec>  Time limit mỗi run khi tuning   (default: 2.0)\n";
-    std::cout << "  --grid   <n>    Số config ở phase grid search    (default: 40)\n";
-    std::cout << "  --refine <n>    Số config ở phase refine         (default: 30)\n";
-    std::cout << "  --local  <n>    Số bước ở phase local search     (default: 20)\n";
-    std::cout << "  --out    <file> Tên file CSV lưu log             (default: tuning_results.csv)\n";
+    std::cout << "  " << programName << "                                              # Run big data benchmark (time-limit)\n";
+    std::cout << "  " << programName << " --single <file> [runs] [time]               # Run single instance\n";
+    std::cout << "  " << programName << " --batch [runs]                              # Run all T_1..T_2160\n";
+    std::cout << "  " << programName << " --big [runs]                                # Run big data (time-limit, default 5s)\n";
+    std::cout << "  " << programName << " --bigtest [runs] [temp_stop]               # Run big data until T <= temp_stop\n";
+    std::cout << "  " << programName << " --tune <f1> [f2 ...] [options]             # Tune parameters\n";
+    std::cout << "\nBigtest options:\n";
+    std::cout << "  runs       Number of runs per instance    (default: 10)\n";
+    std::cout << "  temp_stop  SA stop temperature threshold  (default: 0.001)\n";
+    std::cout << "\nTune options (after file list):\n";
+    std::cout << "  --runs   <n>    Runs/instance when evaluating   (default: 1)\n";
+    std::cout << "  --time   <sec>  Time limit per run when tuning  (default: 2.0)\n";
+    std::cout << "  --grid   <n>    Configs in grid search phase     (default: 40)\n";
+    std::cout << "  --refine <n>    Configs in refine phase          (default: 30)\n";
+    std::cout << "  --local  <n>    Steps in local search phase      (default: 20)\n";
+    std::cout << "  --out    <file> CSV output filename              (default: tuning_results.csv)\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << programName << " --single data/T_100.txt 20 3.0\n";
     std::cout << "  " << programName << " --batch 10\n";
     std::cout << "  " << programName << " --big 5\n";
+    std::cout << "  " << programName << " --bigtest 10 0.001\n";
+    std::cout << "  " << programName << " --bigtest 5 0.01\n";
     std::cout << "  " << programName << " --tune data/T_1.txt data/T_50.txt data/T_100.txt\n";
     std::cout << "  " << programName << " --tune data/T_1.txt data/T_50.txt --runs 2 --time 1.5 --grid 50\n";
 }
@@ -77,8 +83,22 @@ int main(int argc, char* argv[])
     else if (mode == "--big")
     {
         int numRuns = (argc >= 3) ? std::stoi(argv[2]) : 10;
-        std::cout << "Running big data instances with " << numRuns << " runs each\n\n";
+        std::cout << "Running big data instances (time-limit mode) with "
+                  << numRuns << " runs each\n\n";
         solver.runBigData(numRuns);
+        return 0;
+    }
+    else if (mode == "--bigtest")
+    {
+        int    numRuns  = (argc >= 3) ? std::stoi(argv[2]) : 10;
+        double tempStop = (argc >= 4) ? std::stod(argv[3]) : 0.001;
+
+        std::cout << "Running big data instances (temp-stop mode)\n";
+        std::cout << "Stop condition : T <= " << tempStop << "\n";
+        std::cout << "Runs per inst  : " << numRuns << "\n";
+        std::cout << "Output file    : big_data_results_tempstop.csv\n\n";
+
+        solver.runBigDataUntilTempStop(numRuns, tempStop);
         return 0;
     }
     else if (mode == "--tune")
@@ -90,7 +110,7 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        // ── Thu thập danh sách file (cho đến khi gặp flag --xxx) ──────
+        // Collect file list (until we hit a flag starting with --)
         std::vector<std::string> tuneFiles;
         int i = 2;
         while (i < argc && argv[i][0] != '-')
@@ -106,7 +126,7 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        // ── Parse các option còn lại ───────────────────────────────────
+        // Parse remaining options
         int         runs        = 1;
         double      tunTime     = 5.0;
         int         gridSamples = 40;
@@ -117,7 +137,7 @@ int main(int argc, char* argv[])
         while (i < argc)
         {
             std::string flag = argv[i];
-            if ((flag == "--runs"   || flag == "--run") && i + 1 < argc)
+            if ((flag == "--runs" || flag == "--run") && i + 1 < argc)
                 { runs        = std::stoi(argv[++i]); }
             else if (flag == "--time"   && i + 1 < argc)
                 { tunTime     = std::stod(argv[++i]); }
@@ -136,7 +156,6 @@ int main(int argc, char* argv[])
             ++i;
         }
 
-        // ── In tóm tắt cấu hình ───────────────────────────────────────
         std::cout << "Mode        : parameter tuning\n";
         std::cout << "Instances   : ";
         for (const auto& f : tuneFiles) std::cout << f << "  ";
@@ -148,25 +167,23 @@ int main(int argc, char* argv[])
         std::cout << "Local iter  : " << local       << "\n";
         std::cout << "CSV out     : " << outCSV      << "\n\n";
 
-        // ── Chạy tuning ───────────────────────────────────────────────
         ParamConfig best = solver.tuneParameters(
             tuneFiles, runs, tunTime, gridSamples, refine, local, outCSV);
 
-        // ── Hỏi có chạy luôn với config vừa tìm được không ───────────
-        std::cout << "\nRun --single với config vừa tune? (y/n): ";
+        std::cout << "\nRun --single with tuned config? (y/n): ";
         char ans = 'n';
         std::cin >> ans;
         if (ans == 'y' || ans == 'Y')
         {
-            std::cout << "Nhập file instance để chạy: ";
+            std::cout << "Instance file: ";
             std::string fname;
             std::cin >> fname;
 
-            std::cout << "Số runs (default 10): ";
+            std::cout << "Runs (default 10): ";
             int nr = 10;
             std::cin >> nr;
 
-            std::cout << "Time limit giây (default 5.0): ";
+            std::cout << "Time limit in seconds (default 5.0): ";
             double tl = 5.0;
             std::cin >> tl;
 

@@ -38,73 +38,111 @@ public:
     double beta              = 10.0;
     double time_limit        = 5.0;
 
-    int    gls_freq = 300;   // how often (in SA iters without improvement) to trigger greedy LS
+    // Temperature-stop mode
+    bool   use_temp_stop = false;
+    double temp_stop     = 0.001;
+
+    int    gls_freq = 300;
 
     std::vector<int> machJobCount;
 
-    // ── Greedy Local Search ───────────────────────────────────────────────
-    // Runs up to nTrials moves using the same operators as SA.
-    // Accepts a move only if it strictly improves bestFitness (greedy).
-    // Updates Xbest in-place when an improvement is found.
     bool greedyLS(std::vector<int>& Xbest, std::vector<long long>& loadBest,
                   std::vector<int>& cntBest, double& bestFitness,
                   int blockSize,
                   std::chrono::high_resolution_clock::time_point start_time,
                   double time_budget_ratio)
     {
+        // Snapshot X current để restore nếu không improve
+        std::vector<int>       X_cur    = X;
+        std::vector<long long> load_cur = machLoad;
+        std::vector<int>       cnt_cur  = machJobCount;
+
+        // Bắt đầu từ Xbest
+        X            = Xbest;
+        machLoad     = loadBest;
+        machJobCount = cntBest;
+
         double elapsed   = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - start_time).count();
-        double remaining = time_limit - elapsed;
-        if (remaining <= 0) return false;
-
-        double budget   = std::min(time_budget_ratio * time_limit, remaining * 0.20);
-        auto   ls_start = std::chrono::high_resolution_clock::now();
-
-        bool improved = false;
-
-        std::vector<int>       X_try    = X;
-        std::vector<long long> load_try = machLoad;
-        std::vector<int>       cnt_try  = machJobCount;
-
-        int nTrials = (instance.job + instance.mach - 1) / instance.mach;
-
-        for (int t = 0; t < nTrials; ++t)
+        double remaining = use_temp_stop ? 1e9 : (time_limit - elapsed);
+        if (remaining <= 0)
         {
-            if (t % 20 == 0) {
-                double used = std::chrono::duration<double>(
-                    std::chrono::high_resolution_clock::now() - ls_start).count();
-                if (used >= budget) break;
-            }
-
-            X_try    = X;
-            load_try = machLoad;
-            cnt_try  = machJobCount;
-
-            int op = ops.selectOperator();
-            ops.apply(op, X, instance.mach, blockSize,
-                      instance.proc_time, machLoad);
-            rebuildCache();
-            redistrubutionBasedOnCost();
-
-            double newFit = computeFitness_fromCache();
-
-            if (newFit < bestFitness)
-            {
-                bestFitness = newFit;
-                Xbest       = X;
-                loadBest    = machLoad;
-                cntBest     = machJobCount;
-                improved    = true;
-            }
-            else
-            {
-                X            = X_try;
-                machLoad     = load_try;
-                machJobCount = cnt_try;
-            }
+            X = X_cur; machLoad = load_cur; machJobCount = cnt_cur;
+            return false;
         }
 
-        return improved;
+        double budget   = use_temp_stop
+                          ? 1e9
+                          : std::min(time_budget_ratio * time_limit, remaining * 0.20);
+        auto   ls_start = std::chrono::high_resolution_clock::now();
+
+        bool anyImproved  = false;
+        int  nTrials      = (instance.job + instance.mach - 1) / instance.mach;
+
+        // Chain: unlimited passes khi temp-stop, 1 pass khi time-limit
+        int  maxPasses    = use_temp_stop ? INT_MAX : 1;
+        bool passImproved = true;
+        int  passCount    = 0;
+
+        while (passImproved && passCount < maxPasses)
+        {
+            passImproved = false;
+            ++passCount;
+
+            std::vector<int>       X_try    = X;
+            std::vector<long long> load_try = machLoad;
+            std::vector<int>       cnt_try  = machJobCount;
+
+            for (int t = 0; t < nTrials; ++t)
+            {
+                if (!use_temp_stop && t % 20 == 0)
+                {
+                    double used = std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now() - ls_start).count();
+                    if (used >= budget) goto gls_done;
+                }
+
+                X_try    = X;
+                load_try = machLoad;
+                cnt_try  = machJobCount;
+
+                int op = ops.selectOperator();
+                ops.apply(op, X, instance.mach, blockSize,
+                          instance.proc_time, machLoad);
+                rebuildCache();
+                redistrubutionBasedOnCost();
+
+                double newFit = computeFitness_fromCache();
+
+                if (newFit < bestFitness)
+                {
+                    bestFitness  = newFit;
+                    Xbest        = X;
+                    loadBest     = machLoad;
+                    cntBest      = machJobCount;
+                    anyImproved  = true;
+                    passImproved = true;
+                }
+                else
+                {
+                    X            = X_try;
+                    machLoad     = load_try;
+                    machJobCount = cnt_try;
+                }
+            }
+        }
+        gls_done:
+
+        if (!anyImproved)
+        {
+            // Restore X về current — SA tiếp tục như không có gì xảy ra
+            X            = X_cur;
+            machLoad     = load_cur;
+            machJobCount = cnt_cur;
+        }
+        // Nếu improve: X = Xbest mới, SA tiếp tục từ vùng tốt hơn
+
+        return anyImproved;
     }
 
     // ─────────────────────────────────────────────
@@ -226,9 +264,10 @@ public:
     // ISA-GLS core
     // ─────────────────────────────────────────────
     struct RunStats {
-        int totalIter      = 0;
-        int glsCalls       = 0;
-        int glsImproved    = 0;
+        int    totalIter   = 0;
+        int    glsCalls    = 0;
+        int    glsImproved = 0;
+        double finalTemp   = 0.0;
     };
 
     RunStats ISA(std::chrono::high_resolution_clock::time_point start_time)
@@ -252,15 +291,15 @@ public:
         {
             double br = (upper_bound > lower_bound)
                 ? (double)(bound - lower_bound) / (upper_bound - lower_bound) : 0.5;
-            gls_freq = std::max(150, std::min(500,
-                       (int)(reset_threshold * (1.5 - br))));
+            int base_freq = 10000;
+            gls_freq = base_freq;
         }
 
         double time_budget_ratio = 0.04;
         if (instance.job >= 300 && instance.mach >= 20)
             time_budget_ratio = 0.02;
 
-        bool enableGLS = (instance.job > 100 || time_limit > 1.0);
+        bool enableGLS = (instance.job > 100 || time_limit > 1.0 || use_temp_stop);  
 
         std::uniform_real_distribution<double> dist(0.0, 1.0);
 
@@ -271,17 +310,19 @@ public:
         load_snap.reserve(instance.mach + 1);
         cnt_snap.reserve(instance.mach + 1);
 
+        auto shouldStop = [&]() -> bool {
+            if (use_temp_stop)
+                return T <= temp_stop;
+            return std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - start_time).count() >= time_limit;
+        };
+
         bool timeUp = false;
         while (!timeUp)
         {
             for (int iter = 0; iter < maxInnerIter && !timeUp; ++iter)
             {
-                auto now = std::chrono::high_resolution_clock::now();
-                if (std::chrono::duration<double>(now - start_time).count() >= time_limit)
-                {
-                    timeUp = true;
-                    break;
-                }
+                if (shouldStop()) { timeUp = true; break; }
 
                 ++stats.totalIter;
                 ++sinceLastImprove;
@@ -332,7 +373,6 @@ public:
                     cnt_snap.resize(instance.mach + 1);
                 }
 
-                // Periodic greedy LS triggered on stagnation
                 if (enableGLS && sinceLastImprove > 0 &&
                     sinceLastImprove % gls_freq == 0)
                 {
@@ -352,7 +392,6 @@ public:
                         ++glsFailCount;
                         if (glsFailCount >= 3)
                         {
-                            // Perturbation: escape local optimum by random reassignment
                             X            = Xb;
                             machLoad     = loadB;
                             machJobCount = cntB;
@@ -375,6 +414,9 @@ public:
                             currentFitness = computeFitness_fromCache();
                             glsFailCount   = 0;
                             ops.resetWeights();
+
+                            // FIX C: reset sinceLastImprove sau perturbation
+                            sinceLastImprove = 0;
                         }
                     }
                 }
@@ -390,9 +432,11 @@ public:
             {
                 ops.updateWeights(adaptation_rate);
                 T *= cooling_rate;
+                if (shouldStop()) timeUp = true;
             }
         }
 
+        stats.finalTemp = T;
         X = Xb; machLoad = loadB; machJobCount = cntB;
         repair();
         return stats;
@@ -408,7 +452,8 @@ public:
             std::cerr << "Cannot read file: " << filename << "\n";
             return;
         }
-        time_limit = timeLimitSec;
+        use_temp_stop = false;
+        time_limit    = timeLimitSec;
 
         upper_bound = (int)calculateUpper();
         lower_bound = (int)calculateLower();
@@ -478,13 +523,14 @@ public:
         outFile << "Instance,Run,Objective,Runtime,Iterations\n";
         outFile.flush();
 
-        for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
+        for (int fileIdx = 2000; fileIdx <= 2160; ++fileIdx)
         {
             std::stringstream ss;
             ss << "data/T_" << fileIdx << ".txt";
             if (!instance.readFromFile(ss.str())) continue;
 
             int n = instance.job, m = instance.mach;
+            use_temp_stop = false;
             time_limit = (n <= 12 && m <= 3) ? 0.2 :
                          (n <= 50 && m <= 10) ? 1 : 5;
 
@@ -525,7 +571,7 @@ public:
     }
 
     // ─────────────────────────────────────────────
-    // runBigData
+    // runBigData  (time-limit mode)
     // ─────────────────────────────────────────────
     void runBigData(int numRuns)
     {
@@ -544,10 +590,7 @@ public:
 
         std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
 
-        struct ModeInfo { Operators::OperatorMode mode; std::string label; };
-        std::vector<ModeInfo> modes = {
-            { Operators::OperatorMode::SMART, "SMART" }
-        };
+        use_temp_stop = false;
 
         for (const auto& folder : folders)
         {
@@ -581,47 +624,141 @@ public:
                               << " Machines=" << instance.mach << "\n";
                     std::cout.flush();
 
-                    for (const auto& modeInfo : modes)
+                    ops.mode = Operators::OperatorMode::SMART;
+
+                    for (int run = 1; run <= numRuns; ++run)
                     {
-                        ops.mode = modeInfo.mode;
-                        std::cout << "  -- Mode: " << modeInfo.label << " --\n";
+                        X.assign(instance.job + 1, 1);
+                        ops.resetWeights();
+                        init();
+                        t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+                        auto start_time = std::chrono::high_resolution_clock::now();
+                        auto stats      = ISA(start_time);
+                        auto end_time   = std::chrono::high_resolution_clock::now();
+
+                        std::chrono::duration<double> elapsed = end_time - start_time;
+                        double obj = computeTCT_fromCache();
+
+                        outFile << folder.name << ',' << instName << ','
+                                << ',' << run << ','
+                                << (long long)obj << ','
+                                << std::fixed << std::setprecision(3)
+                                << elapsed.count() << ',' << stats.totalIter << '\n';
+                        outFile.flush();
+
+                        std::cout << "    Run " << run
+                                  << " | TCT=" << (long long)obj
+                                  << " | GLS=" << stats.glsCalls
+                                  << "(+" << stats.glsImproved << ")"
+                                  << " | Time=" << std::fixed << std::setprecision(3)
+                                  << elapsed.count() << "s\n";
                         std::cout.flush();
-
-                        for (int run = 1; run <= numRuns; ++run)
-                        {
-                            X.assign(instance.job + 1, 1);
-                            ops.resetWeights();
-                            init();
-                            t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
-
-                            auto start_time = std::chrono::high_resolution_clock::now();
-                            auto stats      = ISA(start_time);
-                            auto end_time   = std::chrono::high_resolution_clock::now();
-
-                            std::chrono::duration<double> elapsed = end_time - start_time;
-                            double obj = computeTCT_fromCache();
-
-                            outFile << folder.name << ',' << instName << ','
-                                    << ',' << run << ','
-                                    << (long long)obj << ','
-                                    << std::fixed << std::setprecision(3)
-                                    << elapsed.count() << ',' << stats.totalIter << '\n';
-                            outFile.flush();
-
-                            std::cout << "    Run " << run
-                                      << " | TCT=" << (long long)obj
-                                      << " | GLS=" << stats.glsCalls
-                                      << "(+" << stats.glsImproved << ")"
-                                      << " | Time=" << std::fixed << std::setprecision(3)
-                                      << elapsed.count() << "s\n";
-                            std::cout.flush();
-                        }
                     }
                 }
             }
         }
         outFile.close();
         std::cout << "\nDone! Results saved to big_data_results.csv\n";
+    }
+
+    // ─────────────────────────────────────────────
+    // runBigDataUntilTempStop  (T <= temp_stop mode)
+    // ─────────────────────────────────────────────
+    void runBigDataUntilTempStop(int numRuns, double tempStop = 0.001)
+    {
+        std::ofstream outFile("big_data_results_tempstop.csv");
+        if (!outFile.is_open()) { std::cerr << "Cannot open output file!\n"; return; }
+
+        outFile << "Folder,Instance,Run,Objective,Runtime,Iterations,T_final\n";
+        outFile.flush();
+
+        struct FolderInfo { std::string name; };
+        std::vector<FolderInfo> folders = {
+            {"200_2000"}, {"200_5000"}, {"500_10000"}
+        };
+        std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
+
+        use_temp_stop = true;
+        temp_stop     = tempStop;
+        time_limit    = 1e9;
+
+        for (const auto& folder : folders)
+        {
+            std::string basePath = "data/big_data/" + folder.name + "/";
+
+            std::cout << "\n========== Folder: " << folder.name
+                      << " | Stop when T <= " << tempStop << " ==========\n";
+            std::cout.flush();
+
+            for (const auto& prefix : prefixes)
+            {
+                for (int idx = 1; idx <= 5; ++idx)
+                {
+                    std::string filename = basePath + prefix + "_" + std::to_string(idx) + ".txt";
+                    std::string instName = prefix + "_" + std::to_string(idx);
+
+                    if (!instance.readFromFile(filename))
+                    {
+                        std::cerr << "Cannot read: " << filename << "\n";
+                        continue;
+                    }
+
+                    upper_bound = (int)calculateUpper();
+                    lower_bound = (int)calculateLower();
+                    bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
+                                   instance.ctrl_factor * upper_bound);
+
+                    std::cout << "[" << folder.name << "] " << instName
+                              << " | Jobs=" << instance.job
+                              << " Machines=" << instance.mach << "\n";
+                    std::cout.flush();
+
+                    ops.mode = Operators::OperatorMode::SMART;
+
+                    for (int run = 1; run <= numRuns; ++run)
+                    {
+                        X.assign(instance.job + 1, 1);
+                        ops.resetWeights();
+                        init();
+                        t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+                        auto start_time = std::chrono::high_resolution_clock::now();
+                        auto stats      = ISA(start_time);
+                        auto end_time   = std::chrono::high_resolution_clock::now();
+
+                        std::chrono::duration<double> elapsed = end_time - start_time;
+                        double obj = computeTCT_fromCache();
+
+                        outFile << folder.name << ',' << instName << ','
+                                << run << ','
+                                << (long long)obj << ','
+                                << std::fixed << std::setprecision(3)
+                                << elapsed.count() << ','
+                                << stats.totalIter << ','
+                                << std::scientific << std::setprecision(4)
+                                << stats.finalTemp << '\n';
+                        outFile.flush();
+
+                        std::cout << "    Run " << run
+                                  << " | TCT=" << (long long)obj
+                                  << " | GLS=" << stats.glsCalls
+                                  << "(+" << stats.glsImproved << ")"
+                                  << " | T_final=" << std::scientific << std::setprecision(4)
+                                  << stats.finalTemp
+                                  << " | Time=" << std::fixed << std::setprecision(3)
+                                  << elapsed.count() << "s\n";
+                        std::cout.flush();
+                    }
+                }
+            }
+        }
+
+        use_temp_stop = false;
+        time_limit    = 5.0;
+
+        outFile.close();
+        std::cout << "\nDone! Results saved to big_data_results_tempstop.csv\n";
     }
 
     // ─────────────────────────────────────────────
@@ -692,6 +829,82 @@ public:
         return U;
     }
 
+    void runSingleUntilTempStop(const std::string& filename, int numRuns,
+                             double tempStop = 0.001)
+{
+    if (!instance.readFromFile(filename))
+    {
+        std::cerr << "Cannot read file: " << filename << "\n";
+        return;
+    }
+
+    use_temp_stop = true;
+    temp_stop     = tempStop;
+    time_limit    = 1e9;  // effectively unlimited
+
+    upper_bound = (int)calculateUpper();
+    lower_bound = (int)calculateLower();
+    bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
+                   instance.ctrl_factor * upper_bound);
+
+    std::cout << "=== " << filename << " [TempStop mode, T_stop=" << tempStop << "] ===\n";
+    std::cout << "Jobs=" << instance.job << " Machines=" << instance.mach << "\n";
+    std::cout << "Lower=" << lower_bound << " Upper=" << upper_bound
+              << " Bound=" << bound << "\n\n";
+    std::cout.flush();
+
+    std::vector<double> results, runtimes;
+
+    for (int run = 1; run <= numRuns; ++run)
+    {
+        X.assign(instance.job + 1, 1);
+        ops.resetWeights();
+        init();
+        t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+        auto stats      = ISA(start_time);
+        auto end_time   = std::chrono::high_resolution_clock::now();
+
+        std::chrono::duration<double> elapsed = end_time - start_time;
+        double obj = computeTCT_fromCache();
+
+        results.push_back(obj);
+        runtimes.push_back(elapsed.count());
+
+        std::cout << "Run " << run
+                  << " | TCT="     << (long long)obj
+                  << " | Iter="    << stats.totalIter
+                  << " | T_final=" << std::scientific << std::setprecision(4)
+                                   << stats.finalTemp
+                  << " | Time="    << std::fixed << std::setprecision(3)
+                                   << elapsed.count() << "s"
+                  << " | GLS="     << stats.glsCalls
+                  << "(+"          << stats.glsImproved << ")\n";
+        std::cout.flush();
+    }
+
+    double best   = *std::min_element(results.begin(), results.end());
+    double worst  = *std::max_element(results.begin(), results.end());
+    double avg    = std::accumulate(results.begin(), results.end(), 0.0) / results.size();
+    double var    = 0.0;
+    for (double v : results) var += (v - avg) * (v - avg);
+    double stddev  = std::sqrt(var / results.size());
+    double avgTime = std::accumulate(runtimes.begin(), runtimes.end(), 0.0) / runtimes.size();
+
+    std::cout << "\n--- Summary ---\n"
+              << "Best="    << (long long)best
+              << " Worst="  << (long long)worst
+              << " Avg="    << std::fixed << std::setprecision(2) << avg
+              << " Std="    << stddev
+              << " AvgTime=" << std::setprecision(3) << avgTime << "s\n";
+    std::cout.flush();
+
+    // Restore defaults
+    use_temp_stop = false;
+    time_limit    = 5.0;
+}
+
     ParamConfig tuneParameters(
         const std::vector<std::string>&, int = 1, double = 5.0,
         int = 40, int = 30, int = 20, const std::string& = "tuning_results.csv")
@@ -703,6 +916,8 @@ public:
     long long totalCompletionTime()    { return computeTCT_fromCache(); }
     long long totalEnergyConsumption() { return computeTEC_fromCache(); }
     double    fitnessFunction()        { return computeFitness_fromCache(); }
+
+    
 };
 
 #endif

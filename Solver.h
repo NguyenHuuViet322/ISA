@@ -36,6 +36,10 @@ public:
     double beta              = 10.0;
     double time_limit        = 5.0;
 
+    // Temperature-stop mode
+    bool   use_temp_stop = false;
+    double temp_stop     = 0.001;
+
     std::vector<int> machJobCount;
 
     // ─────────────────────────────────────────────
@@ -91,7 +95,7 @@ public:
     {
         // runSingle("data/T_2160.txt", 20, 4);
         // runAllInstances(10);
-        //runBigData(10);
+        // runBigData(10);
     }
 
     // ─────────────────────────────────────────────
@@ -154,10 +158,20 @@ public:
     }
 
     // ─────────────────────────────────────────────
+    // ISA return struct
+    // ─────────────────────────────────────────────
+    struct RunStats {
+        int    totalIter = 0;
+        double finalTemp = 0.0;
+    };
+
+    // ─────────────────────────────────────────────
     // ISA
     // ─────────────────────────────────────────────
-    int ISA(std::chrono::high_resolution_clock::time_point start_time)
+    RunStats ISA(std::chrono::high_resolution_clock::time_point start_time)
     {
+        RunStats stats;
+
         std::vector<int>       Xb    = X;
         std::vector<long long> loadB = machLoad;
         std::vector<int>       cntB  = machJobCount;
@@ -169,7 +183,6 @@ public:
         int stagnation   = 0;
         int maxInnerIter = (instance.job + instance.mach - 1) / instance.mach;
         int blockSize    = std::max(2, (int)std::ceil(block_parametter * instance.job / instance.mach));
-        int totalIter    = 0;
 
         std::uniform_real_distribution<double> dist(0.0, 1.0);
 
@@ -180,20 +193,26 @@ public:
         load_snap.reserve(instance.mach + 1);
         cnt_snap.reserve(instance.mach + 1);
 
+        // Unified stop condition: temp-stop mode or time-limit mode
+        auto shouldStop = [&]() -> bool {
+            if (use_temp_stop)
+                return T <= temp_stop;
+            return std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - start_time).count() >= time_limit;
+        };
+
         bool timeUp = false;
         while (!timeUp)
         {
             for (int iter = 0; iter < maxInnerIter && !timeUp; ++iter)
             {
-                // Check time inside inner loop
-                auto now = std::chrono::high_resolution_clock::now();
-                if (std::chrono::duration<double>(now - start_time).count() >= time_limit)
+                if (shouldStop())
                 {
                     timeUp = true;
                     break;
                 }
 
-                ++totalIter;
+                ++stats.totalIter;
                 int op = ops.selectOperator();
 
                 X_snap    = X;
@@ -249,12 +268,14 @@ public:
             {
                 ops.updateWeights(adaptation_rate);
                 T *= cooling_rate;
+                if (shouldStop()) timeUp = true;
             }
         }
 
+        stats.finalTemp = T;
         X = Xb; machLoad = loadB; machJobCount = cntB;
         repair();
-        return totalIter;
+        return stats;
     }
 
     // ─────────────────────────────────────────────
@@ -267,7 +288,8 @@ public:
             std::cerr << "Cannot read file: " << filename << "\n";
             return;
         }
-        time_limit = timeLimitSec;
+        use_temp_stop = false;
+        time_limit    = timeLimitSec;
 
         upper_bound = (int)calculateUpper();
         lower_bound = (int)calculateLower();
@@ -290,7 +312,7 @@ public:
             t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
 
             auto start_time = std::chrono::high_resolution_clock::now();
-            int iterCount   = ISA(start_time);
+            auto stats      = ISA(start_time);
             auto end_time   = std::chrono::high_resolution_clock::now();
 
             std::chrono::duration<double> elapsed = end_time - start_time;
@@ -300,8 +322,8 @@ public:
             runtimes.push_back(elapsed.count());
 
             std::cout << "Run " << run
-                      << " | TCT="  << obj
-                      << " | Iter=" << iterCount
+                      << " | TCT="  << (long long)obj
+                      << " | Iter=" << stats.totalIter
                       << " | Time=" << std::fixed << std::setprecision(3)
                       << elapsed.count() << "s\n";
             std::cout.flush();
@@ -315,9 +337,9 @@ public:
         double stddev  = std::sqrt(var / results.size());
         double avgTime = std::accumulate(runtimes.begin(), runtimes.end(), 0.0) / runtimes.size();
 
-        std::cout << "\n--- Summary ---\n";
-        std::cout << "Best="  << best
-                  << " Worst=" << worst
+        std::cout << "\n--- Summary ---\n"
+                  << "Best="  << (long long)best
+                  << " Worst=" << (long long)worst
                   << " Avg="   << std::fixed << std::setprecision(2) << avg
                   << " Std="   << stddev
                   << " AvgTime=" << std::setprecision(3) << avgTime << "s\n";
@@ -338,13 +360,14 @@ public:
         outFile << "Instance,Run,Objective,Runtime,Iterations,Machs,Jobs\n";
         outFile.flush();
 
+        use_temp_stop = false;
+
         for (int fileIdx = 1; fileIdx <= 2160; ++fileIdx)
         {
             std::stringstream ss;
             ss << "data/T_" << fileIdx << ".txt";
             if (!instance.readFromFile(ss.str())) continue;
 
-            int n = instance.job, m = instance.mach;
             time_limit = (fileIdx <= 720) ? 0.2 :
                          (fileIdx <= 1440) ? 1.0 : 5.0;
 
@@ -361,19 +384,19 @@ public:
                 t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
 
                 auto start_time = std::chrono::high_resolution_clock::now();
-                int iterCount = ISA(start_time);
-                auto end_time = std::chrono::high_resolution_clock::now();
+                auto stats      = ISA(start_time);
+                auto end_time   = std::chrono::high_resolution_clock::now();
 
                 std::chrono::duration<double> elapsed = end_time - start_time;
                 double obj = computeTCT_fromCache();
 
-                outFile << fileIdx << ',' << run << ',' << obj << ','
-                        << elapsed.count() << ',' << iterCount << ','
+                outFile << fileIdx << ',' << run << ',' << (long long)obj << ','
+                        << elapsed.count() << ',' << stats.totalIter << ','
                         << instance.mach << ',' << instance.job << '\n';
                 outFile.flush();
 
                 std::cout << "[" << fileIdx << "/2160] Run " << run
-                          << " | TCT=" << obj
+                          << " | TCT=" << (long long)obj
                           << " | Time=" << std::fixed << std::setprecision(3)
                           << elapsed.count() << "s\n";
                 std::cout.flush();
@@ -382,115 +405,228 @@ public:
         outFile.close();
     }
 
+    // ─────────────────────────────────────────────
+    // runBigData  (time-limit mode)
+    // ─────────────────────────────────────────────
     void runBigData(int numRuns)
-{
-    std::ofstream outFile("big_data_results.csv");
-    if (!outFile.is_open())
     {
-        std::cerr << "Cannot open output file!\n";
-        return;
-    }
-    outFile << "Folder,Instance,Mode,Run,Objective,Runtime,Iterations\n";
-    outFile.flush();
-
-    struct FolderInfo {
-        std::string name;
-        double timeLimit;
-    };
-
-    std::vector<FolderInfo> folders = {
-        // {"200_2000",  5},
-        // {"200_5000",  5},
-        {"500_10000", 5}
-    };
-
-    std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
-
-    struct ModeInfo {
-        Operators::OperatorMode mode;
-        std::string  label;
-    };
-    std::vector<ModeInfo> modes = {
-        { Operators::OperatorMode::STANDARD, "STANDARD" },
-        { Operators::OperatorMode::SMART,    "SMART"    }
-    };
-
-    for (const auto& folder : folders)
-    {
-        std::string basePath = "data/big_data/" + folder.name + "/";
-        time_limit = folder.timeLimit;
-
-        std::cout << "\n========== Folder: " << folder.name
-                  << " | TimeLimit=" << folder.timeLimit << "s ==========\n";
-        std::cout.flush();
-
-        for (const auto& prefix : prefixes)
+        std::ofstream outFile("big_data_results.csv");
+        if (!outFile.is_open())
         {
-            for (int idx = 1; idx <= 5; ++idx)
+            std::cerr << "Cannot open output file!\n";
+            return;
+        }
+        outFile << "Folder,Instance,Mode,Run,Objective,Runtime,Iterations\n";
+        outFile.flush();
+
+        struct FolderInfo { std::string name; double timeLimit; };
+        std::vector<FolderInfo> folders = {
+            // {"200_2000",  5},
+            // {"200_5000",  5},
+            {"500_10000", 5}
+        };
+
+        std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
+
+        struct ModeInfo { Operators::OperatorMode mode; std::string label; };
+        std::vector<ModeInfo> modes = {
+            { Operators::OperatorMode::STANDARD, "STANDARD" },
+            { Operators::OperatorMode::SMART,    "SMART"    }
+        };
+
+        use_temp_stop = false;
+
+        for (const auto& folder : folders)
+        {
+            std::string basePath = "data/big_data/" + folder.name + "/";
+            time_limit = folder.timeLimit;
+
+            std::cout << "\n========== Folder: " << folder.name
+                      << " | TimeLimit=" << folder.timeLimit << "s ==========\n";
+            std::cout.flush();
+
+            for (const auto& prefix : prefixes)
             {
-                std::string filename  = basePath + prefix + "_" + std::to_string(idx) + ".txt";
-                std::string instName  = prefix + "_" + std::to_string(idx);
-
-                if (!instance.readFromFile(filename))
+                for (int idx = 1; idx <= 5; ++idx)
                 {
-                    std::cerr << "Cannot read: " << filename << "\n";
-                    continue;
-                }
+                    std::string filename = basePath + prefix + "_" + std::to_string(idx) + ".txt";
+                    std::string instName = prefix + "_" + std::to_string(idx);
 
-                upper_bound = (int)calculateUpper();
-                lower_bound = (int)calculateLower();
-                bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
-                               instance.ctrl_factor * upper_bound);
+                    if (!instance.readFromFile(filename))
+                    {
+                        std::cerr << "Cannot read: " << filename << "\n";
+                        continue;
+                    }
 
-                std::cout << "[" << folder.name << "] " << instName
-                          << " | Jobs=" << instance.job
-                          << " Machines=" << instance.mach << "\n";
-                std::cout.flush();
+                    upper_bound = (int)calculateUpper();
+                    lower_bound = (int)calculateLower();
+                    bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
+                                   instance.ctrl_factor * upper_bound);
 
-                for (const auto& modeInfo : modes)
-                {
-                    ops.mode = modeInfo.mode;  
-
-                    std::cout << "  -- Mode: " << modeInfo.label << " --\n";
+                    std::cout << "[" << folder.name << "] " << instName
+                              << " | Jobs=" << instance.job
+                              << " Machines=" << instance.mach << "\n";
                     std::cout.flush();
 
-                    for (int run = 1; run <= numRuns; ++run)
+                    for (const auto& modeInfo : modes)
                     {
-                        X.assign(instance.job + 1, 1);
-                        ops.resetWeights();
-                        init();
-                        t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
-
-                        auto start_time = std::chrono::high_resolution_clock::now();
-                        int iterCount   = ISA(start_time);
-                        auto end_time   = std::chrono::high_resolution_clock::now();
-
-                        std::chrono::duration<double> elapsed = end_time - start_time;
-                        double obj = computeTCT_fromCache();
-
-                        outFile << folder.name << ',' << instName << ','
-                        << modeInfo.label << ','
-                        << run << ','
-                        << (long long)obj << ','
-                        << std::fixed << std::setprecision(3) << elapsed.count() << ','
-                        << iterCount << '\n';
-                        outFile.flush();
-
-                        std::cout << "    Run " << run
-                                  << " | TCT="  << obj
-                                  << " | Iter=" << iterCount
-                                  << " | Time=" << std::fixed << std::setprecision(3)
-                                  << elapsed.count() << "s\n";
+                        ops.mode = modeInfo.mode;
+                        std::cout << "  -- Mode: " << modeInfo.label << " --\n";
                         std::cout.flush();
+
+                        for (int run = 1; run <= numRuns; ++run)
+                        {
+                            X.assign(instance.job + 1, 1);
+                            ops.resetWeights();
+                            init();
+                            t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+                            auto start_time = std::chrono::high_resolution_clock::now();
+                            auto stats      = ISA(start_time);
+                            auto end_time   = std::chrono::high_resolution_clock::now();
+
+                            std::chrono::duration<double> elapsed = end_time - start_time;
+                            double obj = computeTCT_fromCache();
+
+                            outFile << folder.name << ',' << instName << ','
+                                    << modeInfo.label << ','
+                                    << run << ','
+                                    << (long long)obj << ','
+                                    << std::fixed << std::setprecision(3)
+                                    << elapsed.count() << ','
+                                    << stats.totalIter << '\n';
+                            outFile.flush();
+
+                            std::cout << "    Run " << run
+                                      << " | TCT="  << (long long)obj
+                                      << " | Iter=" << stats.totalIter
+                                      << " | Time=" << std::fixed << std::setprecision(3)
+                                      << elapsed.count() << "s\n";
+                            std::cout.flush();
+                        }
                     }
                 }
             }
         }
+        outFile.close();
+        std::cout << "\nDone! Results saved to big_data_results.csv\n";
     }
 
-    outFile.close();
-    std::cout << "\nDone! Results saved to big_data_results.csv\n";
-}
+    // ─────────────────────────────────────────────
+    // runBigDataUntilTempStop  (T <= temp_stop mode)
+    // ─────────────────────────────────────────────
+    void runBigDataUntilTempStop(int numRuns, double tempStop = 0.001)
+    {
+        std::ofstream outFile("big_data_results_tempstop_ISA.csv");
+        if (!outFile.is_open())
+        {
+            std::cerr << "Cannot open output file!\n";
+            return;
+        }
+        outFile << "Folder,Instance,Mode,Run,Objective,Runtime,Iterations,T_final\n";
+        outFile.flush();
+
+        struct FolderInfo { std::string name; };
+        std::vector<FolderInfo> folders = {
+            // {"200_2000"},
+            // {"200_5000"},
+            {"500_10000"}
+        };
+
+        std::vector<std::string> prefixes = {"N_N", "N_U", "U_N", "U_U"};
+
+        struct ModeInfo { Operators::OperatorMode mode; std::string label; };
+        std::vector<ModeInfo> modes = {
+            { Operators::OperatorMode::STANDARD, "STANDARD" },
+        };
+
+        use_temp_stop = true;
+        temp_stop     = tempStop;
+        time_limit    = 1e9;   // disable time-limit
+
+        for (const auto& folder : folders)
+        {
+            std::string basePath = "data/big_data/" + folder.name + "/";
+
+            std::cout << "\n========== Folder: " << folder.name
+                      << " | Stop when T <= " << tempStop << " ==========\n";
+            std::cout.flush();
+
+            for (const auto& prefix : prefixes)
+            {
+                for (int idx = 1; idx <= 5; ++idx)
+                {
+                    std::string filename = basePath + prefix + "_" + std::to_string(idx) + ".txt";
+                    std::string instName = prefix + "_" + std::to_string(idx);
+
+                    if (!instance.readFromFile(filename))
+                    {
+                        std::cerr << "Cannot read: " << filename << "\n";
+                        continue;
+                    }
+
+                    upper_bound = (int)calculateUpper();
+                    lower_bound = (int)calculateLower();
+                    bound = (int)((1.0 - instance.ctrl_factor) * lower_bound +
+                                   instance.ctrl_factor * upper_bound);
+
+                    std::cout << "[" << folder.name << "] " << instName
+                              << " | Jobs=" << instance.job
+                              << " Machines=" << instance.mach << "\n";
+                    std::cout.flush();
+
+                    for (const auto& modeInfo : modes)
+                    {
+                        ops.mode = modeInfo.mode;
+                        std::cout << "  -- Mode: " << modeInfo.label << " --\n";
+                        std::cout.flush();
+
+                        for (int run = 1; run <= numRuns; ++run)
+                        {
+                            X.assign(instance.job + 1, 1);
+                            ops.resetWeights();
+                            init();
+                            t0 = 0.2 * computeFitness_fromCache() / std::log(2.0);
+
+                            auto start_time = std::chrono::high_resolution_clock::now();
+                            auto stats      = ISA(start_time);
+                            auto end_time   = std::chrono::high_resolution_clock::now();
+
+                            std::chrono::duration<double> elapsed = end_time - start_time;
+                            double obj = computeTCT_fromCache();
+
+                            outFile << folder.name << ',' << instName << ','
+                                    << modeInfo.label << ','
+                                    << run << ','
+                                    << (long long)obj << ','
+                                    << std::fixed << std::setprecision(3)
+                                    << elapsed.count() << ','
+                                    << stats.totalIter << ','
+                                    << std::scientific << std::setprecision(4)
+                                    << stats.finalTemp << '\n';
+                            outFile.flush();
+
+                            std::cout << "    Run " << run
+                                      << " | TCT="  << (long long)obj
+                                      << " | Iter=" << stats.totalIter
+                                      << " | T_final=" << std::scientific << std::setprecision(4)
+                                      << stats.finalTemp
+                                      << " | Time=" << std::fixed << std::setprecision(3)
+                                      << elapsed.count() << "s\n";
+                            std::cout.flush();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Restore defaults
+        use_temp_stop = false;
+        time_limit    = 5.0;
+
+        outFile.close();
+        std::cout << "\nDone! Results saved to big_data_results_tempstop.csv\n";
+    }
 
     // ─────────────────────────────────────────────
     // Repair
@@ -499,17 +635,21 @@ public:
     {
         int repairIter = 0;
         if (computeTEC_fromCache() <= bound) return;
-    std::cerr << "Repairing... TEC=" << computeTEC_fromCache() << " bound=" << bound << "\n";
+        std::cerr << "Repairing... TEC=" << computeTEC_fromCache()
+                  << " bound=" << bound << "\n";
 
         std::vector<std::vector<int>> mj(instance.mach + 1);
 
         while (computeTEC_fromCache() > bound)
         {
             ++repairIter;
-        if (repairIter > 10000) {
-            std::cerr << "repair() STUCK! TEC=" << computeTEC_fromCache() << " bound=" << bound << "\n";
-            break;  // thoát để không treo
-        }
+            if (repairIter > 10000)
+            {
+                std::cerr << "repair() STUCK! TEC=" << computeTEC_fromCache()
+                          << " bound=" << bound << "\n";
+                break;
+            }
+
             for (int m = 0; m <= instance.mach; ++m) mj[m].clear();
             for (int i = 1; i <= instance.job; ++i) mj[X[i]].push_back(i);
 
@@ -561,8 +701,8 @@ public:
         return U;
     }
 
-    long long totalCompletionTime()   { return computeTCT_fromCache(); }
-    long long totalEnergyConsumption(){ return computeTEC_fromCache(); }
+    long long totalCompletionTime()    { return computeTCT_fromCache(); }
+    long long totalEnergyConsumption() { return computeTEC_fromCache(); }
     double    fitnessFunction()        { return computeFitness_fromCache(); }
 };
 

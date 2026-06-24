@@ -74,7 +74,7 @@ public:
         case 1: O2(X); break;
         case 2: O4(X, machCount, blockSize); break;
         case 3:
-            O3_SmartBlock(X, machCount, blockSize, procTime);
+            O3(X, machCount, blockSize);
             break;
         }
         usage[op]++;

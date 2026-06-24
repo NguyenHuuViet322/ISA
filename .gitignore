@@ -1,0 +1,47 @@
+# ===== Build artifacts =====
+*.exe
+*.obj
+*.o
+*.out
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+
+# ===== Data / results / logs =====
+# Toàn bộ thư mục data, log (chứa kết quả chạy thử)
+/data/
+/log/
+
+# CSV kết quả, log, benchmark
+*.csv
+*.txt
+!testGenerator.cpp
+
+# Trường hợp muốn giữ lại 1 vài file txt/csv mẫu quan trọng,
+# bỏ comment và sửa dòng dưới cho đúng tên file cần giữ:
+# !sample_input.txt
+# !important_results.csv
+
+# ===== Thư mục build / tool phụ =====
+/Tool3/
+
+# ===== IDE / Editor =====
+.vscode/
+.vs/
+*.suo
+*.user
+*.sdf
+*.opensdf
+
+# ===== OS junk =====
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ===== Backup / file thử nghiệm linh tinh =====
+*bak*
+*ba.h
+*copy*
+fuck.csv
