@@ -531,8 +531,9 @@ public:
 
             int n = instance.job, m = instance.mach;
             use_temp_stop = false;
-            time_limit = (n <= 12 && m <= 3) ? 0.2 :
-                         (n <= 50 && m <= 10) ? 1 : 5;
+            time_limit = (n <= 12 && m <= 3) ? 10 :     // small
+                        (n <= 50 && m <= 10) ? 100 :   // medium
+                        300;                            // large
 
             upper_bound = (int)calculateUpper();
             lower_bound = (int)calculateLower();
