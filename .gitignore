@@ -11,7 +11,6 @@
 
 # ===== Data / results / logs =====
 # Toàn bộ thư mục data, log (chứa kết quả chạy thử)
-/data/
 /log/
 
 # CSV kết quả, log, benchmark
