@@ -34,7 +34,9 @@
 *.user
 *.sdf
 *.opensdf
-
+*.exe
+*.csv
+*.txt
 # ===== OS junk =====
 Thumbs.db
 desktop.ini
